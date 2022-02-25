@@ -1,0 +1,22 @@
+[suppress_function]
+        symbol_version = EXPERIMENTAL
+[suppress_variable]
+        symbol_version = EXPERIMENTAL
+
+[suppress_function]
+        symbol_version = INTERNAL
+[suppress_variable]
+        symbol_version = INTERNAL
+
+; Ignore generated PMD information strings
+[suppress_variable]
+        name_regexp = _pmd_info$
+
+; Ignore fields inserted in place of reserved_opts of rte_security_ipsec_sa_options
+[suppress_type]
+       name = rte_security_ipsec_sa_options
+       has_data_member_inserted_between = {offset_of(reserved_opts), end}
+
+; Ignore changes to rte_crypto_asym_op, asymmetric crypto API is experimental
+[suppress_type]
+        name = rte_crypto_asym_op
