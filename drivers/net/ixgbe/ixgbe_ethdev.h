@@ -626,6 +626,8 @@ void ixgbevf_dev_rxtx_start(struct rte_eth_dev *dev);
 
 uint16_t ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
+uint16_t ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
+                         uint16_t nb_pkts);
 
 uint16_t ixgbe_recv_pkts_bulk_alloc(void *rx_queue, struct rte_mbuf **rx_pkts,
 				    uint16_t nb_pkts);

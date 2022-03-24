@@ -25,7 +25,7 @@
 #define MAX_PKT_BURST     32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 
-#define MEMPOOL_CACHE_SIZE 256
+#define MEMPOOL_CACHE_SIZE 512
 #define MAX_RX_QUEUE_PER_LCORE 16
 
 #define VECTOR_SIZE_DEFAULT   MAX_PKT_BURST

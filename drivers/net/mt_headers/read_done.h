@@ -14,13 +14,16 @@
 #include "assert.h"
 #include "rte_log.h"
 #include "rte_atomic.h"
+#include <math.h>
+
+//#define SIZE_ULL log2((sizeof(unsigned int) * 8))
 
 #define wrap_ring_no_incr(index, ring_size) (uint16_t) ((index) & (ring_size - 1))
 #define wrap_ring(index, ring_size) (uint16_t) ((index + 1) & (ring_size - 1))
 #define wrap_ring_decrease(index, ring_size) (uint16_t) ((index - 1) & (ring_size - 1))
 #define wrap_ring_n(index, n, size) (uint16_t) ((index + (n)) & (size - 1))
 
-inline void write_batch64(unsigned int *array, uint32_t start, uint32_t end, uint16_t size) {
+ static void write_batch64(unsigned int *array, uint32_t start, uint32_t end, uint16_t size) {
     //printf("Writing to tail from start %u until end %u\n", start, end);
     uint8_t size_ull = sizeof(unsigned int) * 8;
     unsigned int start_var = start/size_ull;
@@ -44,7 +47,7 @@ inline void write_batch64(unsigned int *array, uint32_t start, uint32_t end, uin
     //printf("Wrote whole %u variable final step is %u \n", start_var, step);
 }
 
-inline void write_bit(unsigned int *array, uint32_t bit) {
+ static void write_bit(unsigned int *array, uint32_t bit) {
     uint8_t size_ull = sizeof(unsigned int) * 8;
     unsigned int start_var = bit/size_ull;
     unsigned int offset = bit % size_ull;
@@ -69,7 +72,7 @@ inline void write_bit(unsigned int *array, uint32_t bit) {
  * uint32_t start: the start in the 0...NUM_RX_QUEUE_ENTRIES - 1 range
  * uint16_t size: the size of our RX queue (should be equal to NUM_RX_QUEUE_ENTRIES)
  */
-inline uint32_t read_most_significant_bit(unsigned long long *array, uint32_t start, uint16_t size) {
+ static uint32_t read_most_significant_bit(unsigned long long *array, uint32_t start, uint16_t size) {
 
     //we need size_ull to understand whether we need to check also the next ull variable in the array or not
     uint8_t size_ull = sizeof(unsigned long long) * 8;
@@ -95,7 +98,7 @@ inline uint32_t read_most_significant_bit(unsigned long long *array, uint32_t st
 
 }
 
-inline uint32_t read_end_batch64(unsigned int *array, uint32_t start, uint16_t size) {
+ static uint32_t read_end_batch64(unsigned int *array, uint32_t start, uint16_t size) {
     uint8_t size_ull = sizeof(unsigned int) * 8;
     unsigned int start_var = start/size_ull;
     //__sync_synchronize();
@@ -106,7 +109,8 @@ inline uint32_t read_end_batch64(unsigned int *array, uint32_t start, uint16_t s
     return start_var * size_ull;
 }
 
-inline uint32_t read_batch64(unsigned int *array, uint32_t start, uint16_t size) {
+ static uint32_t read_batch64(unsigned int *array, uint32_t start, uint16_t size) {
+    //RTE_LOG(CRIT, EAL, "entering\n");
     uint8_t size_ull = sizeof(unsigned int) * 8;
     unsigned int start_var = start/size_ull;
     unsigned int processed = 0;
@@ -114,12 +118,14 @@ inline uint32_t read_batch64(unsigned int *array, uint32_t start, uint16_t size)
     while (__atomic_load_n(array + start_var, __ATOMIC_ACQUIRE) == UINT_MAX) {
         start_var = wrap_ring(start_var, size/size_ull);
         processed += size_ull;
+      //  RTE_LOG(CRIT, EAL, "start_var %u processed %u\n", start_var, processed);
         //  __sync_synchronize();
     }
+   // RTE_LOG(CRIT, EAL, "exit\n");
     return processed;
 }
 
-inline bool read_bit(unsigned int *array, unsigned int index)
+ static bool read_bit(unsigned int *array, unsigned int index)
 {
     uint8_t size_ull = sizeof(unsigned int) * 8;
     unsigned int start_var = index/size_ull;
@@ -129,7 +135,7 @@ inline bool read_bit(unsigned int *array, unsigned int index)
     return((bool) (bit & __atomic_load_n(array + start_var, __ATOMIC_ACQUIRE)));
 }
 
-inline void write_batch_is_done(unsigned int *array, uint32_t start, uint32_t end, uint16_t size) {
+static void write_batch_is_done(unsigned int *array, uint32_t start, uint32_t end, uint16_t size) {
     uint8_t size_ull = sizeof(unsigned int) * 8;
     uint8_t size_array = size/size_ull;
     unsigned int start_var = start/size_ull;

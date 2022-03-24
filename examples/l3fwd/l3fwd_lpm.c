@@ -155,6 +155,7 @@ lpm_main_loop(__rte_unused void *dummy)
 
 	lcore_id = rte_lcore_id();
 	qconf = &lcore_conf[lcore_id];
+	uint64_t total_pkts = 0;
 
 	const uint16_t n_rx_q = qconf->n_rx_queue;
 	const uint16_t n_tx_p = qconf->n_tx_port;
@@ -209,6 +210,7 @@ lpm_main_loop(__rte_unused void *dummy)
 			if (nb_rx == 0)
 				continue;
 
+			total_pkts += (uint64_t) nb_rx;
 #if defined RTE_ARCH_X86 || defined __ARM_NEON \
 			 || defined RTE_ARCH_PPC_64
 			l3fwd_lpm_send_packets(nb_rx, pkts_burst,
@@ -222,6 +224,7 @@ lpm_main_loop(__rte_unused void *dummy)
 		cur_tsc = rte_rdtsc();
 	}
 
+	printf("Num RX %llu\n", total_pkts);
 	return 0;
 }
 

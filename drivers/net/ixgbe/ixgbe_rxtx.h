@@ -139,6 +139,12 @@ struct ixgbe_rx_queue {
 	/** hold packets to return to application */
 	struct rte_mbuf *rx_stage[RTE_PMD_IXGBE_RX_MAX_BURST*2];
 	const struct rte_memzone *mz;
+    //Marco addition
+    uint32_t max_counter __attribute__ ((aligned (64)));
+    uint64_t release_sync __attribute__ ((aligned (64)));
+    uint32_t max_epoch;
+    unsigned int *read_done __attribute__ ((aligned (64)));
+    unsigned int *epoch __attribute__ ((aligned (64)));
 };
 
 /**

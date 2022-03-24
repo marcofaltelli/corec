@@ -2293,6 +2293,8 @@ port_init(uint16_t portid, uint64_t req_rx_offloads, uint64_t req_tx_offloads)
 	local_port_conf.rxmode.offloads |= req_rx_offloads;
 	local_port_conf.txmode.offloads |= req_tx_offloads;
 
+    local_port_conf.rxmode.offloads = dev_info.rx_offload_capa;
+    local_port_conf.txmode.offloads = dev_info.tx_offload_capa;
 	/* Check that all required capabilities are supported */
 	if ((local_port_conf.rxmode.offloads & dev_info.rx_offload_capa) !=
 			local_port_conf.rxmode.offloads)

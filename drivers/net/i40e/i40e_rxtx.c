@@ -32,8 +32,10 @@
 #include "i40e_ethdev.h"
 #include "i40e_rxtx.h"
 
-#include "read_done.h"
-#include "tail_handler.h"
+#ifdef PARALLEL
+#include "../mt_headers/read_done.h"
+#include "../mt_headers/tail_handler.h"
+#endif
 
 #define DEFAULT_TX_RS_THRESH   32
 #define DEFAULT_TX_FREE_THRESH 32
@@ -829,7 +831,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
     return nb_rx;
 }
-
+#ifdef PARALLEL
 uint16_t
 i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts) {
     struct i40e_rx_queue *rxq;
@@ -857,7 +859,8 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
     rx_ring = rxq->rx_ring;
     sw_ring = rxq->sw_ring;
     ptype_tbl = rxq->vsi->adapter->ptype_tbl;
-
+   // unsigned long time1 = rte_rdts
+    //RTE_LOG(CRIT, EAL, "Entering driver code read done %p epoch %p\n", rxq->read_done, rxq->epoch);
     //Marco addition: starting from here to move on descriptors
     unsigned int max_counter_local = __atomic_load_n(&rxq->max_counter, __ATOMIC_ACQUIRE);
     uint16_t rx_index = wrap_ring_no_incr(max_counter_local, rxq->nb_rx_desc);
@@ -877,7 +880,8 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
                 >> I40E_RXD_QW1_STATUS_SHIFT;
         /* Check the DD bit first, as well as the epoch and the READ_DONE bit set to 0 */
         if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)) ||
-            (__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
+            //(__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
+            (__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch) ||
             (read_bit(rxq->read_done, rx_index))) {
             break;
         }
@@ -942,7 +946,7 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
              * prefetch the next 4 RX descriptors and next 8 pointers
              * to mbufs.
              */
-            if ((rx_id & 0x3) == 0) {
+            if (((rx_id & 0x3) == 0) && ((batch_size - rx_id) > 4)) {
                 rte_prefetch0(&rx_ring[rx_id]);
                 rte_prefetch0(&sw_ring[rx_id]);
             }
@@ -983,13 +987,26 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
 
             rx_pkts[nb_rx++] = rxm;
             //Marco: updating READ_DONE and epoch
-            write_bit(rxq->read_done, rx_index);
-            if ( unlikely(__sync_add_and_fetch(rxq->epoch + rx_index, 1) == (rxq->max_epoch + 1) ))
-                __atomic_store_n(rxq->epoch + rx_index, 0, __ATOMIC_RELEASE);
+            //write_bit(rxq->read_done, rx_index);
+            /*if (rx_index == (rxq->nb_rx_desc - 1)) {
+                if ( unlikely(__sync_add_and_fetch(&rxq->epoch_global, 1) == (rxq->max_epoch + 1) ))
+                    __atomic_store_n(&rxq->epoch_global, 0, __ATOMIC_RELEASE);
+            }*/
+            /*if ( unlikely(__sync_add_and_fetch(rxq->epoch + rx_index, 1) == (rxq->max_epoch + 1) ))
+                __atomic_store_n(rxq->epoch + rx_index, 0, __ATOMIC_RELEASE);*/
             rx_index = wrap_ring_n(rx_index, 1, rxq->nb_rx_desc);
 
         }
+        write_batch_is_done(rxq->read_done, last_rx_index, wrap_ring_decrease(rx_index, rxq->nb_rx_desc), rxq->nb_rx_desc);
 
+        if (rx_index == 0) {
+            if ( unlikely(__sync_add_and_fetch(&rxq->epoch_global, 1) == (rxq->max_epoch + 1) ))
+                __atomic_store_n(&rxq->epoch_global, 0, __ATOMIC_RELEASE);
+        }
+        /*for (uint16_t ii = last_rx_index; ii != rx_index; ii = wrap_ring(ii, rxq->nb_rx_desc)) {
+            if ( __sync_add_and_fetch(rxq->epoch + ii, 1) == (rxq->max_epoch + 1))
+                __atomic_store_n(rxq->epoch + ii, 0, __ATOMIC_RELEASE);
+        }*/
     }
     else {
         return 0;
@@ -1033,6 +1050,8 @@ free_part:
 
 	return nb_rx;
 }
+
+#endif
 
 uint16_t
 i40e_recv_scattered_pkts(void *rx_queue,
@@ -2222,10 +2241,12 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 	rxq->offloads = offloads;
 
+#ifdef PARALLEL
 	//Marco addition
 	rxq->max_counter = 0;
 	rxq->release_sync = 0;
     rxq->max_epoch = UINT_MAX / nb_desc;
+    rxq->epoch_global = 0;
 	rxq->read_done = rte_zmalloc_socket("read_done", nb_desc/8, RTE_CACHE_LINE_SIZE, socket_id);
     if (!rxq->read_done) {
         PMD_DRV_LOG(ERR, "Failed to allocate memory for read_done structure");
@@ -2236,6 +2257,7 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
         PMD_DRV_LOG(ERR, "Failed to allocate memory for epoch structure");
         return -ENOMEM;
     }
+#endif
 
 	/* Allocate the maximum number of RX ring hardware descriptor. */
 	len = I40E_MAX_RING_DESC;
@@ -3560,7 +3582,12 @@ i40e_set_rx_function(struct rte_eth_dev *dev)
 					i40e_recv_scattered_pkts :
 					i40e_recv_pkts;
 	}
+
+    dev->rx_pkt_burst = i40e_recv_pkts;
+#ifdef PARALLEL
     dev->rx_pkt_burst = i40e_recv_pkts_parallel;
+#endif
+
 
 	/* Propagate information about RX function choice through all queues. */
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {

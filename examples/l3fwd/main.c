@@ -893,8 +893,8 @@ init_mem(uint16_t portid, unsigned int nb_mbuf)
 					RTE_MBUF_DEFAULT_BUF_SIZE, socketid);
 			if (pktmbuf_pool[portid][socketid] == NULL)
 				rte_exit(EXIT_FAILURE,
-					"Cannot init mbuf pool on socket %d\n",
-					socketid);
+					"Cannot init mbuf pool on socket %d errno %d\n",
+					socketid, rte_errno);
 			else
 				printf("Allocated mbuf pool on socket %d\n",
 					socketid);

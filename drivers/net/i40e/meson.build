@@ -4,7 +4,8 @@
 cflags += ['-DPF_DRIVER',
     '-DVF_DRIVER',
     '-DINTEGRATED_VF',
-    '-DX722_A0_SUPPORT']
+    '-DX722_A0_SUPPORT',
+    '-l:libatomic.a']
 
 subdir('base')
 objs = [base_objs]

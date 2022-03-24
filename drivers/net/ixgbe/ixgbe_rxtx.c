@@ -53,6 +53,10 @@
 #include "base/ixgbe_common.h"
 #include "ixgbe_rxtx.h"
 
+//Marco addition
+#include "../mt_headers/read_done.h"
+#include "../mt_headers/tail_handler.h"
+
 #ifdef RTE_LIBRTE_IEEE1588
 #define IXGBE_TX_IEEE1588_TMST RTE_MBUF_F_TX_IEEE1588_TMST
 #else
@@ -1782,171 +1786,223 @@ ixgbe_recv_pkts_bulk_alloc(void *rx_queue, struct rte_mbuf **rx_pkts,
 }
 
 uint16_t
-ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
-		uint16_t nb_pkts)
-{
-	struct ixgbe_rx_queue *rxq;
-	volatile union ixgbe_adv_rx_desc *rx_ring;
-	volatile union ixgbe_adv_rx_desc *rxdp;
-	struct ixgbe_rx_entry *sw_ring;
-	struct ixgbe_rx_entry *rxe;
-	struct rte_mbuf *rxm;
-	struct rte_mbuf *nmb;
-	union ixgbe_adv_rx_desc rxd;
-	uint64_t dma_addr;
-	uint32_t staterr;
-	uint32_t pkt_info;
-	uint16_t pkt_len;
-	uint16_t rx_id;
-	uint16_t nb_rx;
-	uint16_t nb_hold;
-	uint64_t pkt_flags;
-	uint64_t vlan_flags;
+ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
+		uint16_t nb_pkts) {
+    struct ixgbe_rx_queue *rxq;
+    volatile union ixgbe_adv_rx_desc *rx_ring;
+    volatile union ixgbe_adv_rx_desc *rxdp;
+    struct ixgbe_rx_entry *sw_ring;
+    struct ixgbe_rx_entry *rxe;
+    struct rte_mbuf *rxm;
+    struct rte_mbuf *nmb;
+    union ixgbe_adv_rx_desc rxd;
+    uint64_t dma_addr;
+    uint32_t staterr;
+    uint32_t pkt_info;
+    uint16_t pkt_len;
+    uint16_t rx_id;
+    uint16_t nb_rx;
+    uint16_t nb_hold;
+    uint64_t pkt_flags;
+    uint64_t vlan_flags;
 
-	nb_rx = 0;
-	nb_hold = 0;
-	rxq = rx_queue;
-	rx_id = rxq->rx_tail;
-	rx_ring = rxq->rx_ring;
-	sw_ring = rxq->sw_ring;
-	vlan_flags = rxq->vlan_flags;
-	while (nb_rx < nb_pkts) {
-		/*
-		 * The order of operations here is important as the DD status
-		 * bit must not be read after any other descriptor fields.
-		 * rx_ring and rxdp are pointing to volatile data so the order
-		 * of accesses cannot be reordered by the compiler. If they were
-		 * not volatile, they could be reordered which could lead to
-		 * using invalid descriptor fields when read from rxd.
-		 */
-		rxdp = &rx_ring[rx_id];
-		staterr = rxdp->wb.upper.status_error;
-		if (!(staterr & rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD)))
-			break;
-		rxd = *rxdp;
+    nb_rx = 0;
+    nb_hold = 0;
+    rxq = rx_queue;
+    rx_id = rxq->rx_tail;
+    rx_ring = rxq->rx_ring;
+    sw_ring = rxq->sw_ring;
+    vlan_flags = rxq->vlan_flags;
 
-		/*
-		 * End of packet.
-		 *
-		 * If the IXGBE_RXDADV_STAT_EOP flag is not set, the RX packet
-		 * is likely to be invalid and to be dropped by the various
-		 * validation checks performed by the network stack.
-		 *
-		 * Allocate a new mbuf to replenish the RX ring descriptor.
-		 * If the allocation fails:
-		 *    - arrange for that RX descriptor to be the first one
-		 *      being parsed the next time the receive function is
-		 *      invoked [on the same queue].
-		 *
-		 *    - Stop parsing the RX ring and return immediately.
-		 *
-		 * This policy do not drop the packet received in the RX
-		 * descriptor for which the allocation of a new mbuf failed.
-		 * Thus, it allows that packet to be later retrieved if
-		 * mbuf have been freed in the mean time.
-		 * As a side effect, holding RX descriptors instead of
-		 * systematically giving them back to the NIC may lead to
-		 * RX ring exhaustion situations.
-		 * However, the NIC can gracefully prevent such situations
-		 * to happen by sending specific "back-pressure" flow control
-		 * frames to its peer(s).
-		 */
-		PMD_RX_LOG(DEBUG, "port_id=%u queue_id=%u rx_id=%u "
-			   "ext_err_stat=0x%08x pkt_len=%u",
-			   (unsigned) rxq->port_id, (unsigned) rxq->queue_id,
-			   (unsigned) rx_id, (unsigned) staterr,
-			   (unsigned) rte_le_to_cpu_16(rxd.wb.upper.length));
+    //Marco addition: starting from here to move on descriptors
+    unsigned int max_counter_local = __atomic_load_n(&rxq->max_counter, __ATOMIC_ACQUIRE);
+    uint16_t rx_index = wrap_ring_no_incr(max_counter_local, rxq->nb_rx_desc);
+    unsigned int current_epoch;
+    current_epoch = max_counter_local / rxq->nb_rx_desc;
+    uint16_t last_rx_index = rx_index;
+    uint16_t batch_size;
+    uint32_t min_counter_local, min_counter_wrapped;
+    uint32_t tail_unwrapped, tail_local;
+    uint32_t processed;
+    //RTE_LOG(CRIT, EAL, "Entering driver code read done %p epoch %p\n", rxq->read_done, rxq->epoch);
+    for (batch_size = 0; batch_size < nb_pkts; batch_size++) {
+        rxdp = &rx_ring[rx_index];
+        staterr = rxdp->wb.upper.status_error;
+        /* Check the DD bit first, as well as the epoch and the READ_DONE bit set to 0 */
+        if (!(staterr & rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD)) ||
+            (__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
+            (read_bit(rxq->read_done, rx_index))) {
+            break;
+        }
 
-		nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
-		if (nmb == NULL) {
-			PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u "
-				   "queue_id=%u", (unsigned) rxq->port_id,
-				   (unsigned) rxq->queue_id);
-			rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed++;
-			break;
-		}
+        rx_index = wrap_ring_n(rx_index, 1, rxq->nb_rx_desc);
+        /* If the next descriptor to be checked is 0, we need to update the epoch to the new one (current + 1) % MAX_EPOCH*/
+        if (rx_index == 0) {
+            if (unlikely(current_epoch == rxq->max_epoch))
+                current_epoch = 0;
+            else
+                current_epoch++;
+        }
+    }
+    //RTE_LOG(CRIT, EAL, "batch size %u\n", batch_size);
+    if (batch_size == 0) {
+        //Even if no packets were found, we still need to check if some descriptors can be freed
+        goto free_part;
+    }
 
-		nb_hold++;
-		rxe = &sw_ring[rx_id];
-		rx_id++;
-		if (rx_id == rxq->nb_rx_desc)
-			rx_id = 0;
+    if (__sync_bool_compare_and_swap(&rxq->max_counter, max_counter_local, max_counter_local + batch_size)) {
+        rx_id = last_rx_index;
+        rx_index = last_rx_index;
 
-		/* Prefetch next mbuf while processing current one. */
-		rte_ixgbe_prefetch(sw_ring[rx_id].mbuf);
+        while (nb_rx < batch_size) {
+            /*
+             * The order of operations here is important as the DD status
+             * bit must not be read after any other descriptor fields.
+             * rx_ring and rxdp are pointing to volatile data so the order
+             * of accesses cannot be reordered by the compiler. If they were
+             * not volatile, they could be reordered which could lead to
+             * using invalid descriptor fields when read from rxd.
+             */
+            rxdp = &rx_ring[rx_id];
+            staterr = rxdp->wb.upper.status_error;
+            if (!(staterr & rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD))) {
+                assert(0);
+                break;
+            }
+            rxd = *rxdp;
 
-		/*
-		 * When next RX descriptor is on a cache-line boundary,
-		 * prefetch the next 4 RX descriptors and the next 8 pointers
-		 * to mbufs.
-		 */
-		if ((rx_id & 0x3) == 0) {
-			rte_ixgbe_prefetch(&rx_ring[rx_id]);
-			rte_ixgbe_prefetch(&sw_ring[rx_id]);
-		}
+            /*
+             * End of packet.
+             *
+             * If the IXGBE_RXDADV_STAT_EOP flag is not set, the RX packet
+             * is likely to be invalid and to be dropped by the various
+             * validation checks performed by the network stack.
+             *
+             * Allocate a new mbuf to replenish the RX ring descriptor.
+             * If the allocation fails:
+             *    - arrange for that RX descriptor to be the first one
+             *      being parsed the next time the receive function is
+             *      invoked [on the same queue].
+             *
+             *    - Stop parsing the RX ring and return immediately.
+             *
+             * This policy do not drop the packet received in the RX
+             * descriptor for which the allocation of a new mbuf failed.
+             * Thus, it allows that packet to be later retrieved if
+             * mbuf have been freed in the mean time.
+             * As a side effect, holding RX descriptors instead of
+             * systematically giving them back to the NIC may lead to
+             * RX ring exhaustion situations.
+             * However, the NIC can gracefully prevent such situations
+             * to happen by sending specific "back-pressure" flow control
+             * frames to its peer(s).
+             */
+            PMD_RX_LOG(DEBUG, "port_id=%u queue_id=%u rx_id=%u "
+                              "ext_err_stat=0x%08x pkt_len=%u",
+                       (unsigned) rxq->port_id, (unsigned) rxq->queue_id,
+                       (unsigned) rx_id, (unsigned) staterr,
+                       (unsigned) rte_le_to_cpu_16(rxd.wb.upper.length));
 
-		rxm = rxe->mbuf;
-		rxe->mbuf = nmb;
-		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
-		rxdp->read.hdr_addr = 0;
-		rxdp->read.pkt_addr = dma_addr;
+            nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
+            if (nmb == NULL) {
+                PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u "
+                                  "queue_id=%u", (unsigned) rxq->port_id,
+                           (unsigned) rxq->queue_id);
+                rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed++;
+                break;
+            }
 
-		/*
-		 * Initialize the returned mbuf.
-		 * 1) setup generic mbuf fields:
-		 *    - number of segments,
-		 *    - next segment,
-		 *    - packet length,
-		 *    - RX port identifier.
-		 * 2) integrate hardware offload data, if any:
-		 *    - RSS flag & hash,
-		 *    - IP checksum flag,
-		 *    - VLAN TCI, if any,
-		 *    - error flags.
-		 */
-		pkt_len = (uint16_t) (rte_le_to_cpu_16(rxd.wb.upper.length) -
-				      rxq->crc_len);
-		rxm->data_off = RTE_PKTMBUF_HEADROOM;
-		rte_packet_prefetch((char *)rxm->buf_addr + rxm->data_off);
-		rxm->nb_segs = 1;
-		rxm->next = NULL;
-		rxm->pkt_len = pkt_len;
-		rxm->data_len = pkt_len;
-		rxm->port = rxq->port_id;
+            nb_hold++;
+            rxe = &sw_ring[rx_id];
+            rx_id++;
+            if (rx_id == rxq->nb_rx_desc)
+                rx_id = 0;
 
-		pkt_info = rte_le_to_cpu_32(rxd.wb.lower.lo_dword.data);
-		/* Only valid if RTE_MBUF_F_RX_VLAN set in pkt_flags */
-		rxm->vlan_tci = rte_le_to_cpu_16(rxd.wb.upper.vlan);
+            /* Prefetch next mbuf while processing current one. */
+            rte_ixgbe_prefetch(sw_ring[rx_id].mbuf);
 
-		pkt_flags = rx_desc_status_to_pkt_flags(staterr, vlan_flags);
-		pkt_flags = pkt_flags |
-			rx_desc_error_to_pkt_flags(staterr, (uint16_t)pkt_info,
-						   rxq->rx_udp_csum_zero_err);
-		pkt_flags = pkt_flags |
-			ixgbe_rxd_pkt_info_to_pkt_flags((uint16_t)pkt_info);
-		rxm->ol_flags = pkt_flags;
-		rxm->packet_type =
-			ixgbe_rxd_pkt_info_to_pkt_type(pkt_info,
-						       rxq->pkt_type_mask);
+            /*
+             * When next RX descriptor is on a cache-line boundary,
+             * prefetch the next 4 RX descriptors and the next 8 pointers
+             * to mbufs.
+             */
+            if ((rx_id & 0x3) == 0) {
+                rte_ixgbe_prefetch(&rx_ring[rx_id]);
+                rte_ixgbe_prefetch(&sw_ring[rx_id]);
+            }
 
-		if (likely(pkt_flags & RTE_MBUF_F_RX_RSS_HASH))
-			rxm->hash.rss = rte_le_to_cpu_32(
-						rxd.wb.lower.hi_dword.rss);
-		else if (pkt_flags & RTE_MBUF_F_RX_FDIR) {
-			rxm->hash.fdir.hash = rte_le_to_cpu_16(
-					rxd.wb.lower.hi_dword.csum_ip.csum) &
-					IXGBE_ATR_HASH_MASK;
-			rxm->hash.fdir.id = rte_le_to_cpu_16(
-					rxd.wb.lower.hi_dword.csum_ip.ip_id);
-		}
-		/*
-		 * Store the mbuf address into the next entry of the array
-		 * of returned packets.
-		 */
-		rx_pkts[nb_rx++] = rxm;
-	}
-	rxq->rx_tail = rx_id;
+            rxm = rxe->mbuf;
+            rxe->mbuf = nmb;
+            dma_addr =
+                    rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
+            rxdp->read.hdr_addr = 0;
+            rxdp->read.pkt_addr = dma_addr;
+
+            /*
+             * Initialize the returned mbuf.
+             * 1) setup generic mbuf fields:
+             *    - number of segments,
+             *    - next segment,
+             *    - packet length,
+             *    - RX port identifier.
+             * 2) integrate hardware offload data, if any:
+             *    - RSS flag & hash,
+             *    - IP checksum flag,
+             *    - VLAN TCI, if any,
+             *    - error flags.
+             */
+            pkt_len = (uint16_t)(rte_le_to_cpu_16(rxd.wb.upper.length) -
+                                 rxq->crc_len);
+            rxm->data_off = RTE_PKTMBUF_HEADROOM;
+            rte_packet_prefetch((char *) rxm->buf_addr + rxm->data_off);
+            rxm->nb_segs = 1;
+            rxm->next = NULL;
+            rxm->pkt_len = pkt_len;
+            rxm->data_len = pkt_len;
+            rxm->port = rxq->port_id;
+
+            pkt_info = rte_le_to_cpu_32(rxd.wb.lower.lo_dword.data);
+            /* Only valid if RTE_MBUF_F_RX_VLAN set in pkt_flags */
+            rxm->vlan_tci = rte_le_to_cpu_16(rxd.wb.upper.vlan);
+
+            pkt_flags = rx_desc_status_to_pkt_flags(staterr, vlan_flags);
+            pkt_flags = pkt_flags |
+                        rx_desc_error_to_pkt_flags(staterr, (uint16_t) pkt_info,
+                                                   rxq->rx_udp_csum_zero_err);
+            pkt_flags = pkt_flags |
+                        ixgbe_rxd_pkt_info_to_pkt_flags((uint16_t) pkt_info);
+            rxm->ol_flags = pkt_flags;
+            rxm->packet_type =
+                    ixgbe_rxd_pkt_info_to_pkt_type(pkt_info,
+                                                   rxq->pkt_type_mask);
+
+            if (likely(pkt_flags & RTE_MBUF_F_RX_RSS_HASH))
+                rxm->hash.rss = rte_le_to_cpu_32(
+                        rxd.wb.lower.hi_dword.rss);
+            else if (pkt_flags & RTE_MBUF_F_RX_FDIR) {
+                rxm->hash.fdir.hash = rte_le_to_cpu_16(
+                        rxd.wb.lower.hi_dword.csum_ip.csum) &
+                                      IXGBE_ATR_HASH_MASK;
+                rxm->hash.fdir.id = rte_le_to_cpu_16(
+                        rxd.wb.lower.hi_dword.csum_ip.ip_id);
+            }
+            /*
+             * Store the mbuf address into the next entry of the array
+             * of returned packets.
+             */
+            rx_pkts[nb_rx++] = rxm;
+        }
+        write_batch_is_done(rxq->read_done, last_rx_index, wrap_ring_decrease(rx_index, rxq->nb_rx_desc), rxq->nb_rx_desc);
+        for (uint16_t ii = last_rx_index; ii != rx_index; ii = wrap_ring(ii, rxq->nb_rx_desc)) {
+            if ( __sync_add_and_fetch(rxq->epoch + ii, 1) == (rxq->max_epoch + 1))
+                __atomic_store_n(rxq->epoch + ii, 0, __ATOMIC_RELEASE);
+        }
+    }
+    else {
+        return 0;
+    }
+    //RTE_LOG(CRIT, EAL, "received %u pkts\n", nb_rx);
+    rxq->rx_tail = rx_id;
 
 	/*
 	 * If the number of free RX descriptors is greater than the RX free
@@ -1957,7 +2013,7 @@ ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	 * RDH register, which creates a "full" ring situation from the
 	 * hardware point of view...
 	 */
-	nb_hold = (uint16_t) (nb_hold + rxq->nb_rx_hold);
+	/*nb_hold = (uint16_t) (nb_hold + rxq->nb_rx_hold);
 	if (nb_hold > rxq->rx_free_thresh) {
 		PMD_RX_LOG(DEBUG, "port_id=%u queue_id=%u rx_tail=%u "
 			   "nb_hold=%u nb_rx=%u",
@@ -1969,8 +2025,229 @@ ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		IXGBE_PCI_REG_WC_WRITE(rxq->rdt_reg_addr, rx_id);
 		nb_hold = 0;
 	}
-	rxq->nb_rx_hold = nb_hold;
+	rxq->nb_rx_hold = nb_hold;*/
+
+    free_part:
+
+    processed = 0;
+    uint64_t release_local = read_variable(&rxq->release_sync);
+    min_counter_local = read_min_counter(&release_local);
+    tail_unwrapped = read_tail_w(&release_local);
+    if (tail_unwrapped != min_counter_local) {
+        return nb_rx;
+    }
+    min_counter_wrapped = wrap_ring_n(min_counter_local, 0, rxq->nb_rx_desc);
+    processed = read_batch64(rxq->read_done, min_counter_wrapped, rxq->nb_rx_desc);
+   // RTE_LOG(CRIT, EAL, "processed is %u pkts\n", processed);
+    if (processed == 0) {
+        //Nothing to free, we can return the received data
+        return nb_rx;
+    }
+    uint64_t release_new;
+    write_min_counter(&release_new, min_counter_local + processed);
+    write_tail_w(&release_new, tail_unwrapped);
+
+    if (__sync_bool_compare_and_swap(&rxq->release_sync, release_local, release_new)) {
+        uint32_t wrapped = wrap_ring_n(min_counter_local, processed - 1, rxq->nb_rx_desc);
+        write_batch64(rxq->read_done, min_counter_wrapped, wrap_ring_n(min_counter_local, processed, rxq->nb_rx_desc), rxq->nb_rx_desc);
+        IXGBE_PCI_REG_WC_WRITE(rxq->rdt_reg_addr, (uint16_t) wrapped);
+        rxq->rx_tail = (uint16_t) wrapped;
+        write_tail_w(&rxq->release_sync, tail_unwrapped + processed);
+    //    RTE_LOG(CRIT, EAL, "writing global tail %u HW tail %u\n", tail_unwrapped + processed, wrapped);
+    }
 	return nb_rx;
+}
+
+uint16_t
+ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
+                uint16_t nb_pkts)
+{
+    struct ixgbe_rx_queue *rxq;
+    volatile union ixgbe_adv_rx_desc *rx_ring;
+    volatile union ixgbe_adv_rx_desc *rxdp;
+    struct ixgbe_rx_entry *sw_ring;
+    struct ixgbe_rx_entry *rxe;
+    struct rte_mbuf *rxm;
+    struct rte_mbuf *nmb;
+    union ixgbe_adv_rx_desc rxd;
+    uint64_t dma_addr;
+    uint32_t staterr;
+    uint32_t pkt_info;
+    uint16_t pkt_len;
+    uint16_t rx_id;
+    uint16_t nb_rx;
+    uint16_t nb_hold;
+    uint64_t pkt_flags;
+    uint64_t vlan_flags;
+
+    nb_rx = 0;
+    nb_hold = 0;
+    rxq = rx_queue;
+    rx_id = rxq->rx_tail;
+    rx_ring = rxq->rx_ring;
+    sw_ring = rxq->sw_ring;
+    vlan_flags = rxq->vlan_flags;
+    while (nb_rx < nb_pkts) {
+        /*
+         * The order of operations here is important as the DD status
+         * bit must not be read after any other descriptor fields.
+         * rx_ring and rxdp are pointing to volatile data so the order
+         * of accesses cannot be reordered by the compiler. If they were
+         * not volatile, they could be reordered which could lead to
+         * using invalid descriptor fields when read from rxd.
+         */
+        rxdp = &rx_ring[rx_id];
+        staterr = rxdp->wb.upper.status_error;
+        if (!(staterr & rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD)))
+            break;
+        rxd = *rxdp;
+
+        /*
+         * End of packet.
+         *
+         * If the IXGBE_RXDADV_STAT_EOP flag is not set, the RX packet
+         * is likely to be invalid and to be dropped by the various
+         * validation checks performed by the network stack.
+         *
+         * Allocate a new mbuf to replenish the RX ring descriptor.
+         * If the allocation fails:
+         *    - arrange for that RX descriptor to be the first one
+         *      being parsed the next time the receive function is
+         *      invoked [on the same queue].
+         *
+         *    - Stop parsing the RX ring and return immediately.
+         *
+         * This policy do not drop the packet received in the RX
+         * descriptor for which the allocation of a new mbuf failed.
+         * Thus, it allows that packet to be later retrieved if
+         * mbuf have been freed in the mean time.
+         * As a side effect, holding RX descriptors instead of
+         * systematically giving them back to the NIC may lead to
+         * RX ring exhaustion situations.
+         * However, the NIC can gracefully prevent such situations
+         * to happen by sending specific "back-pressure" flow control
+         * frames to its peer(s).
+         */
+        PMD_RX_LOG(DEBUG, "port_id=%u queue_id=%u rx_id=%u "
+                          "ext_err_stat=0x%08x pkt_len=%u",
+                   (unsigned) rxq->port_id, (unsigned) rxq->queue_id,
+                   (unsigned) rx_id, (unsigned) staterr,
+                   (unsigned) rte_le_to_cpu_16(rxd.wb.upper.length));
+
+        nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
+        if (nmb == NULL) {
+            PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u "
+                              "queue_id=%u", (unsigned) rxq->port_id,
+                       (unsigned) rxq->queue_id);
+            rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed++;
+            break;
+        }
+
+        nb_hold++;
+        rxe = &sw_ring[rx_id];
+        rx_id++;
+        if (rx_id == rxq->nb_rx_desc)
+            rx_id = 0;
+
+        /* Prefetch next mbuf while processing current one. */
+        rte_ixgbe_prefetch(sw_ring[rx_id].mbuf);
+
+        /*
+         * When next RX descriptor is on a cache-line boundary,
+         * prefetch the next 4 RX descriptors and the next 8 pointers
+         * to mbufs.
+         */
+        if ((rx_id & 0x3) == 0) {
+            rte_ixgbe_prefetch(&rx_ring[rx_id]);
+            rte_ixgbe_prefetch(&sw_ring[rx_id]);
+        }
+
+        rxm = rxe->mbuf;
+        rxe->mbuf = nmb;
+        dma_addr =
+                rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
+        rxdp->read.hdr_addr = 0;
+        rxdp->read.pkt_addr = dma_addr;
+
+        /*
+         * Initialize the returned mbuf.
+         * 1) setup generic mbuf fields:
+         *    - number of segments,
+         *    - next segment,
+         *    - packet length,
+         *    - RX port identifier.
+         * 2) integrate hardware offload data, if any:
+         *    - RSS flag & hash,
+         *    - IP checksum flag,
+         *    - VLAN TCI, if any,
+         *    - error flags.
+         */
+        pkt_len = (uint16_t) (rte_le_to_cpu_16(rxd.wb.upper.length) -
+                              rxq->crc_len);
+        rxm->data_off = RTE_PKTMBUF_HEADROOM;
+        rte_packet_prefetch((char *)rxm->buf_addr + rxm->data_off);
+        rxm->nb_segs = 1;
+        rxm->next = NULL;
+        rxm->pkt_len = pkt_len;
+        rxm->data_len = pkt_len;
+        rxm->port = rxq->port_id;
+
+        pkt_info = rte_le_to_cpu_32(rxd.wb.lower.lo_dword.data);
+        /* Only valid if RTE_MBUF_F_RX_VLAN set in pkt_flags */
+        rxm->vlan_tci = rte_le_to_cpu_16(rxd.wb.upper.vlan);
+
+        pkt_flags = rx_desc_status_to_pkt_flags(staterr, vlan_flags);
+        pkt_flags = pkt_flags |
+                    rx_desc_error_to_pkt_flags(staterr, (uint16_t)pkt_info,
+                                               rxq->rx_udp_csum_zero_err);
+        pkt_flags = pkt_flags |
+                    ixgbe_rxd_pkt_info_to_pkt_flags((uint16_t)pkt_info);
+        rxm->ol_flags = pkt_flags;
+        rxm->packet_type =
+                ixgbe_rxd_pkt_info_to_pkt_type(pkt_info,
+                                               rxq->pkt_type_mask);
+
+        if (likely(pkt_flags & RTE_MBUF_F_RX_RSS_HASH))
+            rxm->hash.rss = rte_le_to_cpu_32(
+                    rxd.wb.lower.hi_dword.rss);
+        else if (pkt_flags & RTE_MBUF_F_RX_FDIR) {
+            rxm->hash.fdir.hash = rte_le_to_cpu_16(
+                    rxd.wb.lower.hi_dword.csum_ip.csum) &
+                                  IXGBE_ATR_HASH_MASK;
+            rxm->hash.fdir.id = rte_le_to_cpu_16(
+                    rxd.wb.lower.hi_dword.csum_ip.ip_id);
+        }
+        /*
+         * Store the mbuf address into the next entry of the array
+         * of returned packets.
+         */
+        rx_pkts[nb_rx++] = rxm;
+    }
+    rxq->rx_tail = rx_id;
+
+    /*
+     * If the number of free RX descriptors is greater than the RX free
+     * threshold of the queue, advance the Receive Descriptor Tail (RDT)
+     * register.
+     * Update the RDT with the value of the last processed RX descriptor
+     * minus 1, to guarantee that the RDT register is never equal to the
+     * RDH register, which creates a "full" ring situation from the
+     * hardware point of view...
+     */
+    nb_hold = (uint16_t) (nb_hold + rxq->nb_rx_hold);
+    if (nb_hold > rxq->rx_free_thresh) {
+        PMD_RX_LOG(DEBUG, "port_id=%u queue_id=%u rx_tail=%u "
+                          "nb_hold=%u nb_rx=%u",
+                   (unsigned) rxq->port_id, (unsigned) rxq->queue_id,
+                   (unsigned) rx_id, (unsigned) nb_hold,
+                   (unsigned) nb_rx);
+        rx_id = (uint16_t) ((rx_id == 0) ?
+                            (rxq->nb_rx_desc - 1) : (rx_id - 1));
+        IXGBE_PCI_REG_WC_WRITE(rxq->rdt_reg_addr, rx_id);
+        nb_hold = 0;
+    }
+    rxq->nb_rx_hold = nb_hold;
+    return nb_rx;
 }
 
 /**
@@ -3126,6 +3403,21 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->drop_en = rx_conf->rx_drop_en;
 	rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 	rxq->offloads = offloads;
+
+	//Addition
+    rxq->max_counter = 0;
+    rxq->release_sync = 0;
+    rxq->max_epoch = UINT_MAX / nb_desc;
+    rxq->read_done = rte_zmalloc_socket("read_done", nb_desc/8, RTE_CACHE_LINE_SIZE, socket_id);
+    if (!rxq->read_done) {
+        PMD_DRV_LOG(ERR, "Failed to allocate memory for read_done structure");
+        return -ENOMEM;
+    }
+    rxq->epoch = rte_zmalloc_socket("epoch", sizeof(unsigned int) * nb_desc, RTE_CACHE_LINE_SIZE, socket_id);
+    if (!rxq->epoch) {
+        PMD_DRV_LOG(ERR, "Failed to allocate memory for epoch structure");
+        return -ENOMEM;
+    }
 
 	/*
 	 * The packet type in RX descriptor is different for different NICs.
@@ -4868,6 +5160,7 @@ ixgbe_set_rx_function(struct rte_eth_dev *dev)
 
 		dev->rx_pkt_burst = ixgbe_recv_pkts;
 	}
+    dev->rx_pkt_burst = ixgbe_recv_pkts_parallel;
 
 	/* Propagate information about RX function choice through all queues. */
 

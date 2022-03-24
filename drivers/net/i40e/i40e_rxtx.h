@@ -5,6 +5,8 @@
 #ifndef _I40E_RXTX_H_
 #define _I40E_RXTX_H_
 
+#define STATS 1
+//#define PARALLEL 1
 #define RTE_PMD_I40E_RX_MAX_BURST 32
 #define RTE_PMD_I40E_TX_MAX_BURST 32
 
@@ -78,6 +80,7 @@ struct i40e_rx_entry {
 	struct rte_mbuf *mbuf;
 };
 
+
 /*
  * Structure associated with each RX queue.
  */
@@ -122,12 +125,15 @@ struct i40e_rx_queue {
 	uint8_t dcb_tc;         /**< Traffic class of rx queue */
 	uint64_t offloads; /**< Rx offload flags of RTE_ETH_RX_OFFLOAD_* */
 	const struct rte_memzone *mz;
-    //Marco addition
-    uint32_t max_counter;
-    uint64_t release_sync;
+#ifdef PARALLEL
+	//Marco addition
+    uint32_t max_counter __attribute__ ((aligned (64)));
+    uint64_t release_sync __attribute__ ((aligned (64)));
     uint32_t max_epoch;
-    unsigned int *read_done;
-    unsigned int *epoch;
+    unsigned int *read_done __attribute__ ((aligned (64)));
+    unsigned int *epoch __attribute__ ((aligned (64)));
+    unsigned int epoch_global __attribute__ ((aligned (64)));
+#endif
 };
 
 struct i40e_tx_entry {
