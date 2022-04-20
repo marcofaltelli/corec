@@ -5663,6 +5663,45 @@ rte_eth_rx_queue_count(uint16_t port_id, uint16_t queue_id)
 	return (int)(*p->rx_queue_count)(qd);
 }
 
+/**
+ * Extimate the number of used descriptors of a Rx queue
+ *
+ * @param port_id
+ *  The port identifier of the Ethernet device.
+ * @param queue_id
+ *  The queue ID on the specific port.
+ * @return
+ *  The extimated number of used descriptors in the specific queue, or:
+ *   - (-ENODEV) if *port_id* is invalid.
+ *     (-EINVAL) if *queue_id* is invalid
+ *     (-ENOTSUP) if the device does not support this function
+ */
+static inline int
+rte_eth_rx_queue_extimate(uint16_t port_id, uint16_t queue_id)
+{
+    struct rte_eth_fp_ops *p;
+    void *qd;
+
+    if (port_id >= RTE_MAX_ETHPORTS ||
+        queue_id >= RTE_MAX_QUEUES_PER_PORT) {
+        RTE_ETHDEV_LOG(ERR,
+                       "Invalid port_id=%u or queue_id=%u\n",
+                       port_id, queue_id);
+        return -EINVAL;
+    }
+
+    /* fetch pointer to queue data */
+    p = &rte_eth_fp_ops[port_id];
+    qd = p->rxq.data[queue_id];
+
+    RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+    RTE_FUNC_PTR_OR_ERR_RET(*p->rx_queue_extimate, -ENOTSUP);
+    if (qd == NULL)
+        return -EINVAL;
+
+    return (int)(*p->rx_queue_extimate)(qd);
+}
+
 /**@{@name Rx hardware descriptor states
  * @see rte_eth_rx_descriptor_status
  */

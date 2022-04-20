@@ -6,7 +6,7 @@
 #define _I40E_RXTX_H_
 
 #define STATS 1
-//#define PARALLEL 1
+#define PARALLEL 1
 #define RTE_PMD_I40E_RX_MAX_BURST 32
 #define RTE_PMD_I40E_TX_MAX_BURST 32
 
@@ -245,6 +245,8 @@ int i40e_alloc_rx_queue_mbufs(struct i40e_rx_queue *rxq);
 void i40e_rx_queue_release_mbufs(struct i40e_rx_queue *rxq);
 
 uint32_t i40e_dev_rx_queue_count(void *rx_queue);
+uint16_t i40e_dev_rx_queue_extimate(void *rx_queue);
+
 int i40e_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int i40e_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
 

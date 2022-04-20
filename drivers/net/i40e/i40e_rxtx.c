@@ -881,8 +881,10 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
         /* Check the DD bit first, as well as the epoch and the READ_DONE bit set to 0 */
         if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)) ||
             //(__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
-            (__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch) ||
-            (read_bit(rxq->read_done, rx_index))) {
+            (__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch) //||
+//            (read_bit(rxq->read_done, rx_index))
+            )
+            {
             break;
         }
 
@@ -2402,6 +2404,37 @@ i40e_dev_rx_queue_count(void *rx_queue)
 	}
 
 	return desc;
+}
+
+uint16_t
+i40e_dev_rx_queue_extimate(void *rx_queue)
+{
+    volatile union i40e_rx_desc *rxdp;
+    struct i40e_rx_queue *rxq;
+    uint16_t jump = rxq->nb_rx_desc / 2;
+    unsigned int max_counter_local = __atomic_load_n(&rxq->max_counter, __ATOMIC_ACQUIRE);
+    uint16_t target = wrap_ring_n(max_counter_local, jump, rxq->nb_rx_desc);
+
+    rxq = rx_queue;
+    //rxdp = &(rxq->rx_ring[target]);
+
+    unsigned int i;
+    for (i = 0; i < 5; i++) {
+        rxdp = &(rxq->rx_ring[target]);
+        //if in start + jump position the DD bit is set, we're fine, otherwise we halve the jump value
+        if (((rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len) &
+                 I40E_RXD_QW1_STATUS_MASK) >> I40E_RXD_QW1_STATUS_SHIFT) &
+               (1 << I40E_RX_DESC_STATUS_DD_SHIFT))
+            break;
+        jump /= 2;
+        target = wrap_ring_n(max_counter_local, jump, rxq->nb_rx_desc);
+
+    }
+    //If i == 3, no descriptor has been seen with a DD bit set
+    if (i == 5)
+        return 0;
+
+    return jump;
 }
 
 int

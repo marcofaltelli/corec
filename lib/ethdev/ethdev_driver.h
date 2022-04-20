@@ -51,8 +51,10 @@ struct rte_eth_dev {
 
 	/** Pointer to PMD transmit prepare function */
 	eth_tx_prep_t tx_pkt_prepare;
-	/** Get the number of used Rx descriptors */
-	eth_rx_queue_count_t rx_queue_count;
+	/** Extimate the number of used Rx descriptors */
+	eth_rx_queue_extimate_t rx_queue_extimate;
+    /** Get the number of used Rx descriptors */
+    eth_rx_queue_count_t rx_queue_count;
 	/** Check the status of a Rx descriptor */
 	eth_rx_descriptor_status_t rx_descriptor_status;
 	/** Check the status of a Tx descriptor */

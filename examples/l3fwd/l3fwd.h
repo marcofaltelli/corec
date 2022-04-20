@@ -22,6 +22,10 @@
 #define RTE_TEST_RX_DESC_DEFAULT 1024
 #define RTE_TEST_TX_DESC_DEFAULT 1024
 
+//Max sleep time is 200 us
+#define MAX_SLEEP 200000
+#define START_SLEEP 5000
+
 #define MAX_PKT_BURST     32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 
@@ -62,6 +66,10 @@ struct mbuf_table {
 	uint16_t len;
 	struct rte_mbuf *m_table[MAX_PKT_BURST];
 };
+
+pthread_cond_t condition;
+pthread_mutex_t mymutex;
+
 
 struct lcore_rx_queue {
 	uint16_t port_id;
@@ -211,6 +219,9 @@ em_main_loop(__rte_unused void *dummy);
 
 int
 lpm_main_loop(__rte_unused void *dummy);
+
+int
+lpm_secondary_loop(__rte_unused void *dummy);
 
 int
 fib_main_loop(__rte_unused void *dummy);

@@ -31,6 +31,7 @@
 #include "l3fwd_event.h"
 
 #include "l3fwd_route.h"
+#include <time.h>
 
 #define IPV4_L3FWD_LPM_MAX_RULES         1024
 #define IPV4_L3FWD_LPM_NUMBER_TBL8S (1 << 8)
@@ -139,6 +140,8 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 #include "l3fwd_lpm.h"
 #endif
 
+
+
 /* main processing loop */
 int
 lpm_main_loop(__rte_unused void *dummy)
@@ -156,6 +159,7 @@ lpm_main_loop(__rte_unused void *dummy)
 	lcore_id = rte_lcore_id();
 	qconf = &lcore_conf[lcore_id];
 	uint64_t total_pkts = 0;
+    unsigned int full_buffer = 0;
 
 	const uint16_t n_rx_q = qconf->n_rx_queue;
 	const uint16_t n_tx_p = qconf->n_tx_port;
@@ -226,6 +230,97 @@ lpm_main_loop(__rte_unused void *dummy)
 
 	printf("Num RX %llu\n", total_pkts);
 	return 0;
+}
+
+int
+lpm_secondary_loop(__rte_unused void *dummy)
+{
+    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+    unsigned lcore_id;
+    uint64_t prev_tsc, diff_tsc, cur_tsc;
+    int i, nb_rx;
+    uint16_t portid;
+    uint8_t queueid;
+    struct lcore_conf *qconf;
+    const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
+                               US_PER_S * BURST_TX_DRAIN_US;
+
+    lcore_id = rte_lcore_id();
+    qconf = &lcore_conf[lcore_id];
+    uint64_t total_pkts = 0;
+    uint64_t cycle_pkts = 0;
+    unsigned int full_buffer = 0;
+    struct timespec sleeptime;
+    sleeptime.tv_sec = 0;
+    sleeptime.tv_nsec = START_SLEEP;
+
+    const uint16_t n_rx_q = qconf->n_rx_queue;
+    const uint16_t n_tx_p = qconf->n_tx_port;
+    if (n_rx_q == 0) {
+        RTE_LOG(INFO, L3FWD, "lcore %u has nothing to do\n", lcore_id);
+        return 0;
+    }
+
+    RTE_LOG(INFO, L3FWD, "entering secondary loop on lcore %u\n", lcore_id);
+
+    //qconf for secondary thread needs to have a global view (see all port/queue pairs)
+    for (i = 0; i < n_rx_q; i++) {
+
+        portid = qconf->rx_queue_list[i].port_id;
+        queueid = qconf->rx_queue_list[i].queue_id;
+        RTE_LOG(INFO, L3FWD,
+                " -- lcoreid=%u portid=%u rxqueueid=%hhu\n",
+                lcore_id, portid, queueid);
+    }
+
+    cur_tsc = rte_rdtsc();
+    prev_tsc = cur_tsc;
+    uint16_t count[n_rx_q];
+    uint16_t mean = 0;
+    uint16_t times = 0;
+    uint16_t delta = 0;
+
+    while (!force_quit) {
+
+        nanosleep(&sleeptime, NULL);
+        cycle_pkts = 0;
+
+        for (i = 0; i < n_rx_q; ++i) {
+            portid = qconf->rx_queue_list[i].port_id;
+            queueid = qconf->rx_queue_list[i].queue_id;
+            count[i] = rte_eth_rx_queue_extimate(portid, queueid);
+            if (count[i] >= 0) {
+                do {
+                    nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst,
+                                             MAX_PKT_BURST);
+
+
+                    total_pkts += (uint64_t) nb_rx;
+                    cycle_pkts += (uint64_t) nb_rx;
+#if defined RTE_ARCH_X86 || defined __ARM_NEON \
+			 || defined RTE_ARCH_PPC_64
+                    l3fwd_lpm_send_packets(nb_rx, pkts_burst,
+                            portid, qconf);
+#else
+                    l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
+                                              portid, qconf);
+#endif /* X86 */
+                    } while (nb_rx >= MAX_PKT_BURST/2);
+                }
+            else
+                continue;
+                }
+
+        if (cycle_pkts == 0) {
+            sleeptime.tv_nsec *= 2;
+            if (sleeptime.tv_nsec >= MAX_SLEEP)
+                sleeptime.tv_nsec = MAX_SLEEP;
+        }else
+            sleeptime.tv_nsec = START_SLEEP;
+    }
+
+    printf("Secondary thread num RX %llu\n", total_pkts);
+    return 0;
 }
 
 static __rte_always_inline uint16_t

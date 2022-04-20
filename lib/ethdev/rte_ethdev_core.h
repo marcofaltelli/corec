@@ -50,6 +50,9 @@ typedef uint16_t (*eth_tx_prep_t)(void *txq,
 /** @internal Get number of used descriptors on a receive queue. */
 typedef uint32_t (*eth_rx_queue_count_t)(void *rxq);
 
+/** @internal Extimate number of used descriptors on a receive queue. */
+typedef uint16_t (*eth_rx_queue_extimate_t)(void *rxq);
+
 /** @internal Check the status of a Rx descriptor */
 typedef int (*eth_rx_descriptor_status_t)(void *rxq, uint16_t offset);
 
@@ -88,6 +91,8 @@ struct rte_eth_fp_ops {
 	eth_rx_burst_t rx_pkt_burst;
 	/** Get the number of used Rx descriptors. */
 	eth_rx_queue_count_t rx_queue_count;
+    /** Get the number of expected Rx descriptors. */
+    eth_rx_queue_extimate_t rx_queue_extimate;
 	/** Check the status of a Rx descriptor. */
 	eth_rx_descriptor_status_t rx_descriptor_status;
 	/** Rx queues data. */

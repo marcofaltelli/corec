@@ -47,6 +47,8 @@
 #include "l3fwd.h"
 #include "l3fwd_event.h"
 #include "l3fwd_route.h"
+#include <pthread.h>
+#include <sys/prctl.h>
 
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_LCORE
 #define MAX_RX_QUEUE_PER_PORT 128
@@ -145,6 +147,7 @@ struct l3fwd_lkp_mode {
 	int   (*check_ptype)(int);
 	rte_rx_callback_fn cb_parse_ptype;
 	int   (*main_loop)(void *);
+    int   (*secondary_loop)(void *);
 	void* (*get_ipv4_lookup_struct)(int);
 	void* (*get_ipv6_lookup_struct)(int);
 };
@@ -165,6 +168,7 @@ static struct l3fwd_lkp_mode l3fwd_lpm_lkp = {
 	.check_ptype		= lpm_check_ptype,
 	.cb_parse_ptype		= lpm_cb_parse_ptype,
 	.main_loop              = lpm_main_loop,
+	.secondary_loop              = lpm_secondary_loop,
 	.get_ipv4_lookup_struct = lpm_get_ipv4_l3fwd_lookup_struct,
 	.get_ipv6_lookup_struct = lpm_get_ipv6_l3fwd_lookup_struct,
 };
@@ -184,6 +188,7 @@ static struct l3fwd_lkp_mode l3fwd_fib_lkp = {
  */
 const struct ipv4_l3fwd_route ipv4_l3fwd_route_array[] = {
 	{RTE_IPV4(198, 18, 0, 0), 24, 0},
+    {RTE_IPV4(192, 168, 1, 0), 24, 1},
 	{RTE_IPV4(198, 18, 1, 0), 24, 1},
 	{RTE_IPV4(198, 18, 2, 0), 24, 2},
 	{RTE_IPV4(198, 18, 3, 0), 24, 3},
@@ -198,7 +203,7 @@ const struct ipv4_l3fwd_route ipv4_l3fwd_route_array[] = {
 	{RTE_IPV4(198, 18, 12, 0), 24, 12},
 	{RTE_IPV4(198, 18, 13, 0), 24, 13},
 	{RTE_IPV4(198, 18, 14, 0), 24, 14},
-	{RTE_IPV4(198, 18, 15, 0), 24, 15},
+	//{RTE_IPV4(198, 18, 15, 0), 24, 15},
 };
 
 /*
@@ -328,6 +333,12 @@ init_lcore_rx_queues(void)
 			lcore_conf[lcore].rx_queue_list[nb_rx_queue].queue_id =
 				lcore_params[i].queue_id;
 			lcore_conf[lcore].n_rx_queue++;
+			//Marco add on
+            lcore_conf[11].rx_queue_list[nb_rx_queue].port_id =
+                    lcore_params[i].port_id;
+            lcore_conf[11].rx_queue_list[nb_rx_queue].queue_id =
+                    lcore_params[i].queue_id;
+            lcore_conf[11].n_rx_queue++;
 		}
 	}
 	return 0;
@@ -1065,6 +1076,18 @@ config_port_max_pkt_len(struct rte_eth_conf *conf,
 	return 0;
 }
 
+static struct rte_eth_fc_conf fc_conf = {
+        .pause_time = 1,
+        .send_xon = 1,
+        .mode = RTE_FC_NONE,
+       /* .high_water = 0,
+        .low_water  = 0,
+        .pause_time = 0,
+        .send_xon   = 0,
+        .mac_ctrl_frame_fwd = 0,
+        .autoneg = 0*/
+};
+
 static void
 l3fwd_poll_resource_setup(void)
 {
@@ -1219,7 +1242,12 @@ l3fwd_poll_resource_setup(void)
 			qconf->tx_port_id[qconf->n_tx_port] = portid;
 			qconf->n_tx_port++;
 		}
-		printf("\n");
+
+      /*  ret = rte_eth_dev_flow_ctrl_set(portid, &fc_conf);
+        if (ret < 0)
+            rte_exit(EXIT_FAILURE, "Failed to setup hardware flow control on "
+                                   "port %u (error %d)\n", (unsigned) portid, ret);
+		printf("\n");*/
 	}
 
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
@@ -1268,6 +1296,14 @@ l3fwd_poll_resource_setup(void)
 				ret, portid);
 		}
 	}
+
+   /* RTE_ETH_FOREACH_DEV(portid) {
+        printf("Disabling FC port %d\n", portid);
+        ret = rte_eth_dev_flow_ctrl_set(portid, &fc_conf);
+        if (ret < 0)
+            rte_exit(EXIT_FAILURE, "Failed to setup hardware flow control on "
+                                   "port %u (error %d)\n", (unsigned) portid, ret);
+    }*/
 }
 
 static inline int
@@ -1358,6 +1394,7 @@ l3fwd_event_service_setup(void)
 	}
 }
 
+
 int
 main(int argc, char **argv)
 {
@@ -1437,6 +1474,14 @@ main(int argc, char **argv)
 					"rte_eth_promiscuous_enable: err=%s, port=%u\n",
 					rte_strerror(-ret), portid);
 		}
+        ret = rte_eth_dev_flow_ctrl_set(portid, &fc_conf);
+        if (ret < 0)
+            rte_exit(EXIT_FAILURE, "Failed to setup hardware flow control on "
+                                   "port %u (error %d)\n", (unsigned) portid, ret);
+        printf("\n");
+        struct rte_eth_fc_conf local_conf;
+        rte_eth_dev_flow_ctrl_get(portid, &local_conf);
+        printf("Mode %d autoneg %d fwd %d \t", local_conf.mode, local_conf.autoneg, local_conf.mac_ctrl_frame_fwd);
 	}
 
 	printf("\n");
@@ -1455,9 +1500,24 @@ main(int argc, char **argv)
 
 	check_all_ports_link_status(enabled_port_mask);
 
+	/*if (pthread_cond_init(&condition, NULL) != 0)
+	    rte_exit(EXIT_FAILURE, "error in condition setup\n");
+    if (pthread_mutex_init(&mymutex, NULL) != 0)
+        rte_exit(EXIT_FAILURE, "error in mutex setup\n");*/
+    prctl(PR_SET_TIMERSLACK, 1);
+
 	ret = 0;
 	/* launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(l3fwd_lkp.main_loop, NULL, CALL_MAIN);
+    /*if (rte_eal_remote_launch(l3fwd_lkp.secondary_loop, NULL, 11) != 0)
+        printf("Error in launching sec thread\n");
+    printf("Before main loop launch");
+    rte_eal_mp_remote_launch(l3fwd_lkp.main_loop, NULL, CALL_MAIN);
+    printf("After main loop launch");*/
+    //RTE_LCORE_FOREACH_SLAVE(lcore_id){
+        rte_eal_remote_launch(l3fwd_lkp.main_loop, NULL, 9);
+        rte_eal_remote_launch(l3fwd_lkp.secondary_loop, NULL, 11);
+    //}
+    rte_eal_mp_wait_lcore();
 	if (evt_rsrc->enabled) {
 		for (i = 0; i < evt_rsrc->rx_adptr.nb_rx_adptr; i++)
 			rte_event_eth_rx_adapter_stop(
