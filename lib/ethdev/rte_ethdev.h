@@ -5624,6 +5624,63 @@ rte_eth_rx_burst(uint16_t port_id, uint16_t queue_id,
 	return nb_rx;
 }
 
+//TODO: add documentation for the parallel version
+static inline uint16_t
+rte_eth_rx_burst_parallel(uint16_t port_id, uint16_t queue_id,
+                 struct rte_mbuf **rx_pkts, const uint16_t nb_pkts)
+{
+    uint16_t nb_rx;
+    struct rte_eth_fp_ops *p;
+    void *qd;
+
+#ifdef RTE_ETHDEV_DEBUG_RX
+    if (port_id >= RTE_MAX_ETHPORTS ||
+			queue_id >= RTE_MAX_QUEUES_PER_PORT) {
+		RTE_ETHDEV_LOG(ERR,
+			"Invalid port_id=%u or queue_id=%u\n",
+			port_id, queue_id);
+		return 0;
+	}
+#endif
+
+    /* fetch pointer to queue data */
+    p = &rte_eth_fp_ops[port_id];
+    qd = p->rxq.data[queue_id];
+
+#ifdef RTE_ETHDEV_DEBUG_RX
+    RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, 0);
+
+	if (qd == NULL) {
+		RTE_ETHDEV_LOG(ERR, "Invalid Rx queue_id=%u for port_id=%u\n",
+			queue_id, port_id);
+		return 0;
+	}
+#endif
+
+    nb_rx = p->rx_pkt_burst_parallel(qd, rx_pkts, nb_pkts);
+
+#ifdef RTE_ETHDEV_RXTX_CALLBACKS
+    {
+		void *cb;
+
+		/* __ATOMIC_RELEASE memory order was used when the
+		 * call back was inserted into the list.
+		 * Since there is a clear dependency between loading
+		 * cb and cb->fn/cb->next, __ATOMIC_ACQUIRE memory order is
+		 * not required.
+		 */
+		cb = __atomic_load_n((void **)&p->rxq.clbk[queue_id],
+				__ATOMIC_RELAXED);
+		if (unlikely(cb != NULL))
+			nb_rx = rte_eth_call_rx_callbacks(port_id, queue_id,
+					rx_pkts, nb_rx, nb_pkts, cb);
+	}
+#endif
+
+    rte_ethdev_trace_rx_burst_parallel(port_id, queue_id, (void **)rx_pkts, nb_rx);
+    return nb_rx;
+}
+
 /**
  * Get the number of used descriptors of a Rx queue
  *

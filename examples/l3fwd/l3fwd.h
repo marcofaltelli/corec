@@ -19,12 +19,12 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_RX_DESC_DEFAULT 4096
 #define RTE_TEST_TX_DESC_DEFAULT 1024
 
 //Max sleep time is 200 us
-#define MAX_SLEEP 200000
-#define START_SLEEP 5000
+#define MAX_SLEEP 20000
+#define START_SLEEP 1000
 
 #define MAX_PKT_BURST     32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */

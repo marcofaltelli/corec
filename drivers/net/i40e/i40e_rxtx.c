@@ -31,6 +31,7 @@
 #include "base/i40e_type.h"
 #include "i40e_ethdev.h"
 #include "i40e_rxtx.h"
+#include <math.h>
 
 #ifdef PARALLEL
 #include "../mt_headers/read_done.h"
@@ -635,7 +636,7 @@ rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 	if (!nb_pkts)
 		return 0;
-
+    //If there are some packets already staged
 	if (rxq->rx_nb_avail)
 		return i40e_rx_fill_from_stage(rxq, rx_pkts, nb_pkts);
 
@@ -832,6 +833,17 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
     return nb_rx;
 }
 #ifdef PARALLEL
+
+static inline struct rte_mbuf *rte_mbuf_raw_alloc_bulk(struct rte_mempool *mp, unsigned int n)
+{
+    struct rte_mbuf *m;
+
+    if (rte_mempool_get_bulk(mp, (void **)&m, n) < 0)
+        return NULL;
+    __rte_mbuf_raw_sanity_check(m);
+    return m;
+}
+
 uint16_t
 i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts) {
     struct i40e_rx_queue *rxq;
@@ -843,6 +855,7 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
     struct rte_eth_dev *dev;
     struct rte_mbuf *rxm;
     struct rte_mbuf *nmb;
+    struct rte_mbuf *batch[32];
     uint16_t nb_rx;
     uint32_t rx_status;
     uint64_t qword1;
@@ -907,6 +920,12 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
         rx_id = last_rx_index;
         rx_index = last_rx_index;
 
+
+        int ret = rte_mempool_get_bulk(rxq->mp, (void **)&batch, batch_size);
+
+        if (ret != 0)
+            RTE_LOG(CRIT, EAL, "Failed bulk allocation\n");
+
         while (nb_rx < batch_size) {
             rxdp = &rx_ring[rx_id];
             qword1 = rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len);
@@ -920,7 +939,10 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
                 break;
             }
 
-            nmb = rte_mbuf_raw_alloc(rxq->mp);
+            //nmb = rte_mbuf_raw_alloc(rxq->mp);
+            //Addition: entry is already allocated, now needs to be only assigned
+            nmb = batch[nb_rx];
+
             if (unlikely(!nmb)) {
                 dev = I40E_VSI_TO_ETH_DEV(rxq->vsi);
                 dev->data->rx_mbuf_alloc_failed++;
@@ -2251,14 +2273,15 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
     rxq->epoch_global = 0;
 	rxq->read_done = rte_zmalloc_socket("read_done", nb_desc/8, RTE_CACHE_LINE_SIZE, socket_id);
     if (!rxq->read_done) {
-        PMD_DRV_LOG(ERR, "Failed to allocate memory for read_done structure");
+        PMD_DRV_LOG(ERR, "Failed to allocate memory for "
+                         " structure");
         return -ENOMEM;
     }
-    rxq->epoch = rte_zmalloc_socket("epoch", sizeof(unsigned int) * nb_desc, RTE_CACHE_LINE_SIZE, socket_id);
+    /*rxq->epoch = rte_zmalloc_socket("epoch", sizeof(unsigned int) * nb_desc, RTE_CACHE_LINE_SIZE, socket_id);
     if (!rxq->epoch) {
         PMD_DRV_LOG(ERR, "Failed to allocate memory for epoch structure");
         return -ENOMEM;
-    }
+    }*/
 #endif
 
 	/* Allocate the maximum number of RX ring hardware descriptor. */
@@ -2409,8 +2432,13 @@ i40e_dev_rx_queue_count(void *rx_queue)
 uint16_t
 i40e_dev_rx_queue_extimate(void *rx_queue)
 {
+#ifndef PARALLEL
+    return 0;
+#endif
+#ifdef PARALLEL
     volatile union i40e_rx_desc *rxdp;
     struct i40e_rx_queue *rxq;
+    rxq = rx_queue;
     uint16_t jump = rxq->nb_rx_desc / 2;
     unsigned int max_counter_local = __atomic_load_n(&rxq->max_counter, __ATOMIC_ACQUIRE);
     uint16_t target = wrap_ring_n(max_counter_local, jump, rxq->nb_rx_desc);
@@ -2419,22 +2447,21 @@ i40e_dev_rx_queue_extimate(void *rx_queue)
     //rxdp = &(rxq->rx_ring[target]);
 
     unsigned int i;
-    for (i = 0; i < 5; i++) {
+    for (i = 4, jump /=pow(2, i) ; i < 5; i++) {
         rxdp = &(rxq->rx_ring[target]);
         //if in start + jump position the DD bit is set, we're fine, otherwise we halve the jump value
         if (((rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len) &
                  I40E_RXD_QW1_STATUS_MASK) >> I40E_RXD_QW1_STATUS_SHIFT) &
                (1 << I40E_RX_DESC_STATUS_DD_SHIFT))
-            break;
+            return 1;
         jump /= 2;
         target = wrap_ring_n(max_counter_local, jump, rxq->nb_rx_desc);
 
     }
-    //If i == 3, no descriptor has been seen with a DD bit set
-    if (i == 5)
-        return 0;
+    //If i == 5, no descriptor has been seen with a DD bit set
 
-    return jump;
+    return 0;
+#endif
 }
 
 int
@@ -3621,7 +3648,6 @@ i40e_set_rx_function(struct rte_eth_dev *dev)
     dev->rx_pkt_burst = i40e_recv_pkts_parallel;
 #endif
 
-
 	/* Propagate information about RX function choice through all queues. */
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
 		rx_using_sse =
@@ -3778,6 +3804,9 @@ i40e_set_tx_function(struct rte_eth_dev *dev)
 		dev->tx_pkt_burst = i40e_xmit_pkts;
 		dev->tx_pkt_prepare = i40e_prep_pkts;
 	}
+	//addition
+   // dev->tx_pkt_burst = i40e_xmit_pkts;
+    //dev->tx_pkt_prepare = i40e_prep_pkts;
 }
 
 static const struct {

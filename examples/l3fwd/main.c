@@ -49,6 +49,7 @@
 #include "l3fwd_route.h"
 #include <pthread.h>
 #include <sys/prctl.h>
+#include <rte_random.h>
 
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_LCORE
 #define MAX_RX_QUEUE_PER_PORT 128
@@ -128,7 +129,8 @@ static struct rte_eth_conf port_conf = {
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = RTE_ETH_RSS_IP,
+			//.rss_hf = RTE_ETH_RSS_IP,
+			.rss_hf = ETH_RSS_FRAG_IPV4 | ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP,
 		},
 	},
 	.txmode = {
@@ -334,11 +336,11 @@ init_lcore_rx_queues(void)
 				lcore_params[i].queue_id;
 			lcore_conf[lcore].n_rx_queue++;
 			//Marco add on
-            lcore_conf[11].rx_queue_list[nb_rx_queue].port_id =
+           /* lcore_conf[11].rx_queue_list[nb_rx_queue].port_id =
                     lcore_params[i].port_id;
             lcore_conf[11].rx_queue_list[nb_rx_queue].queue_id =
                     lcore_params[i].queue_id;
-            lcore_conf[11].n_rx_queue++;
+            lcore_conf[11].n_rx_queue++;*/
 		}
 	}
 	return 0;
@@ -1505,19 +1507,25 @@ main(int argc, char **argv)
     if (pthread_mutex_init(&mymutex, NULL) != 0)
         rte_exit(EXIT_FAILURE, "error in mutex setup\n");*/
     prctl(PR_SET_TIMERSLACK, 1);
+    rte_srand(123456);
 
 	ret = 0;
 	/* launch per-lcore init on every lcore */
     /*if (rte_eal_remote_launch(l3fwd_lkp.secondary_loop, NULL, 11) != 0)
-        printf("Error in launching sec thread\n");
+        printf("Error in launching sec thread\n");*/
     printf("Before main loop launch");
     rte_eal_mp_remote_launch(l3fwd_lkp.main_loop, NULL, CALL_MAIN);
-    printf("After main loop launch");*/
+    printf("After main loop launch");
     //RTE_LCORE_FOREACH_SLAVE(lcore_id){
-        rte_eal_remote_launch(l3fwd_lkp.main_loop, NULL, 9);
-        rte_eal_remote_launch(l3fwd_lkp.secondary_loop, NULL, 11);
+    //rte_eal_remote_launch(l3fwd_lkp.secondary_loop, NULL, 11);
+    printf("secondary loop launched\n");
+    //rte_eal_remote_launch(l3fwd_lkp.main_loop, NULL, 9);
     //}
-    rte_eal_mp_wait_lcore();
+    //lpm_main_loop(NULL);
+    printf("lcore %d about to wait master is %d\n", rte_lcore_id(), rte_get_main_lcore());
+    //rte_eal_wait_lcore(9);
+   // rte_eal_wait_lcore(11);
+    printf("lcore %d finished waiting\n", rte_lcore_id());
 	if (evt_rsrc->enabled) {
 		for (i = 0; i < evt_rsrc->rx_adptr.nb_rx_adptr; i++)
 			rte_event_eth_rx_adapter_stop(

@@ -1785,6 +1785,8 @@ ixgbe_recv_pkts_bulk_alloc(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return nb_rx;
 }
 
+#ifdef PARALLEL
+
 uint16_t
 ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts) {
@@ -1795,6 +1797,7 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
     struct ixgbe_rx_entry *rxe;
     struct rte_mbuf *rxm;
     struct rte_mbuf *nmb;
+    struct rte_mbuf *batch[32];
     union ixgbe_adv_rx_desc rxd;
     uint64_t dma_addr;
     uint32_t staterr;
@@ -1814,6 +1817,7 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
     sw_ring = rxq->sw_ring;
     vlan_flags = rxq->vlan_flags;
 
+
     //Marco addition: starting from here to move on descriptors
     unsigned int max_counter_local = __atomic_load_n(&rxq->max_counter, __ATOMIC_ACQUIRE);
     uint16_t rx_index = wrap_ring_no_incr(max_counter_local, rxq->nb_rx_desc);
@@ -1824,14 +1828,16 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
     uint32_t min_counter_local, min_counter_wrapped;
     uint32_t tail_unwrapped, tail_local;
     uint32_t processed;
-    //RTE_LOG(CRIT, EAL, "Entering driver code read done %p epoch %p\n", rxq->read_done, rxq->epoch);
+    //RTE_LOG(CRIT, EAL, "Entering driver code\n");
     for (batch_size = 0; batch_size < nb_pkts; batch_size++) {
         rxdp = &rx_ring[rx_index];
         staterr = rxdp->wb.upper.status_error;
         /* Check the DD bit first, as well as the epoch and the READ_DONE bit set to 0 */
         if (!(staterr & rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD)) ||
-            (__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
-            (read_bit(rxq->read_done, rx_index))) {
+            //(__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
+                (__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch)) //||
+         //   (read_bit(rxq->read_done, rx_index)))
+            {
             break;
         }
 
@@ -1844,15 +1850,21 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
                 current_epoch++;
         }
     }
-    //RTE_LOG(CRIT, EAL, "batch size %u\n", batch_size);
     if (batch_size == 0) {
         //Even if no packets were found, we still need to check if some descriptors can be freed
         goto free_part;
     }
+    //RTE_LOG(CRIT, EAL, "batch size %u\n", batch_size);
 
     if (__sync_bool_compare_and_swap(&rxq->max_counter, max_counter_local, max_counter_local + batch_size)) {
+      //  RTE_LOG(CRIT, EAL, "won max counter race new value is %u\n", max_counter_local + batch_size);
         rx_id = last_rx_index;
         rx_index = last_rx_index;
+
+        int ret = rte_mempool_get_bulk(rxq->mp, (void **)&batch, batch_size);
+
+        if (ret != 0)
+            RTE_LOG(CRIT, EAL, "Failed bulk allocation\n");
 
         while (nb_rx < batch_size) {
             /*
@@ -1903,7 +1915,8 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
                        (unsigned) rx_id, (unsigned) staterr,
                        (unsigned) rte_le_to_cpu_16(rxd.wb.upper.length));
 
-            nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
+            //nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
+            nmb = batch[nb_rx];
             if (nmb == NULL) {
                 PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u "
                                   "queue_id=%u", (unsigned) rxq->port_id,
@@ -1991,17 +2004,23 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
              * of returned packets.
              */
             rx_pkts[nb_rx++] = rxm;
+            rx_index = wrap_ring_n(rx_index, 1, rxq->nb_rx_desc);
         }
         write_batch_is_done(rxq->read_done, last_rx_index, wrap_ring_decrease(rx_index, rxq->nb_rx_desc), rxq->nb_rx_desc);
-        for (uint16_t ii = last_rx_index; ii != rx_index; ii = wrap_ring(ii, rxq->nb_rx_desc)) {
+       // RTE_LOG(CRIT, EAL, "start %u end %u size %u\n", last_rx_index, wrap_ring_decrease(rx_index, rxq->nb_rx_desc), rxq->nb_rx_desc);
+        if (rx_index == 0) {
+            if ( unlikely(__sync_add_and_fetch(&rxq->epoch_global, 1) == (rxq->max_epoch + 1) ))
+                __atomic_store_n(&rxq->epoch_global, 0, __ATOMIC_RELEASE);
+        }
+/*        for (uint16_t ii = last_rx_index; ii != rx_index; ii = wrap_ring(ii, rxq->nb_rx_desc)) {
             if ( __sync_add_and_fetch(rxq->epoch + ii, 1) == (rxq->max_epoch + 1))
                 __atomic_store_n(rxq->epoch + ii, 0, __ATOMIC_RELEASE);
-        }
+        }*/
     }
     else {
         return 0;
     }
-    //RTE_LOG(CRIT, EAL, "received %u pkts\n", nb_rx);
+  //  RTE_LOG(CRIT, EAL, "received %u pkts\n", nb_rx);
     rxq->rx_tail = rx_id;
 
 	/*
@@ -2031,18 +2050,26 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
 
     processed = 0;
     uint64_t release_local = read_variable(&rxq->release_sync);
+   // RTE_LOG(CRIT, EAL, "release local %lu\n", release_local);
     min_counter_local = read_min_counter(&release_local);
     tail_unwrapped = read_tail_w(&release_local);
+    //RTE_LOG(CRIT, EAL, "tail unw %u min counter local %u\n", tail_unwrapped, min_counter_local);
     if (tail_unwrapped != min_counter_local) {
+      //  RTE_LOG(CRIT, EAL, "exit1\n");
         return nb_rx;
     }
     min_counter_wrapped = wrap_ring_n(min_counter_local, 0, rxq->nb_rx_desc);
+    //RTE_LOG(CRIT, EAL, "read_done %u min counter %u size %u\n", *(rxq->read_done), min_counter_wrapped, rxq->nb_rx_desc);
+   // for (int ii = 0; ii < rxq->nb_rx_desc/32; ii++)
+     //   RTE_LOG(CRIT, EAL, "%d %u\t", ii, *(rxq->read_done + ii));
     processed = read_batch64(rxq->read_done, min_counter_wrapped, rxq->nb_rx_desc);
-   // RTE_LOG(CRIT, EAL, "processed is %u pkts\n", processed);
+    //RTE_LOG(CRIT, EAL, "processed is %u pkts\n", processed);
     if (processed == 0) {
         //Nothing to free, we can return the received data
+        //RTE_LOG(CRIT, EAL, "exit2\n");
         return nb_rx;
     }
+    //RTE_LOG(CRIT, EAL, "read done %u min_counter_wrapped % num desc %u processed is %u pkts\n", rxq->read_done, min_counter_wrapped, rxq->nb_rx_desc, processed);
     uint64_t release_new;
     write_min_counter(&release_new, min_counter_local + processed);
     write_tail_w(&release_new, tail_unwrapped);
@@ -2055,8 +2082,11 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
         write_tail_w(&rxq->release_sync, tail_unwrapped + processed);
     //    RTE_LOG(CRIT, EAL, "writing global tail %u HW tail %u\n", tail_unwrapped + processed, wrapped);
     }
+
 	return nb_rx;
 }
+
+#endif
 
 uint16_t
 ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
@@ -3405,19 +3435,24 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->offloads = offloads;
 
 	//Addition
+#ifdef PARALLEL
     rxq->max_counter = 0;
     rxq->release_sync = 0;
     rxq->max_epoch = UINT_MAX / nb_desc;
+    rxq->epoch_global = 0;
     rxq->read_done = rte_zmalloc_socket("read_done", nb_desc/8, RTE_CACHE_LINE_SIZE, socket_id);
     if (!rxq->read_done) {
         PMD_DRV_LOG(ERR, "Failed to allocate memory for read_done structure");
         return -ENOMEM;
     }
-    rxq->epoch = rte_zmalloc_socket("epoch", sizeof(unsigned int) * nb_desc, RTE_CACHE_LINE_SIZE, socket_id);
+    for (int ii = 0; ii < rxq->nb_rx_desc/32; ii++)
+        RTE_LOG(CRIT, EAL, "%d %u\t", ii, *(rxq->read_done + ii));
+    /*rxq->epoch = rte_zmalloc_socket("epoch", sizeof(unsigned int) * nb_desc, RTE_CACHE_LINE_SIZE, socket_id);
     if (!rxq->epoch) {
         PMD_DRV_LOG(ERR, "Failed to allocate memory for epoch structure");
         return -ENOMEM;
-    }
+    }*/
+#endif
 
 	/*
 	 * The packet type in RX descriptor is different for different NICs.
@@ -5143,7 +5178,7 @@ ixgbe_set_rx_function(struct rte_eth_dev *dev)
 				    "burst size no less than %d (port=%d).",
 			     RTE_IXGBE_DESCS_PER_LOOP,
 			     dev->data->port_id);
-
+        RTE_LOG(CRIT, EAL, "ixgbe_recv_pkts_vec selected\n");
 		dev->rx_pkt_burst = ixgbe_recv_pkts_vec;
 	} else if (adapter->rx_bulk_alloc_allowed) {
 		PMD_INIT_LOG(DEBUG, "Rx Burst Bulk Alloc Preconditions are "
@@ -5160,13 +5195,17 @@ ixgbe_set_rx_function(struct rte_eth_dev *dev)
 
 		dev->rx_pkt_burst = ixgbe_recv_pkts;
 	}
+    dev->rx_pkt_burst = ixgbe_recv_pkts;
+#ifdef PARALLEL
     dev->rx_pkt_burst = ixgbe_recv_pkts_parallel;
+#endif
 
 	/* Propagate information about RX function choice through all queues. */
 
 	rx_using_sse =
 		(dev->rx_pkt_burst == ixgbe_recv_scattered_pkts_vec ||
 		dev->rx_pkt_burst == ixgbe_recv_pkts_vec);
+    RTE_LOG(CRIT, EAL, "Using vector version? %u\n", rx_using_sse);
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		struct ixgbe_rx_queue *rxq = dev->data->rx_queues[i];

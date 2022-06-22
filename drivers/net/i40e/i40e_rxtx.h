@@ -131,7 +131,7 @@ struct i40e_rx_queue {
     uint64_t release_sync __attribute__ ((aligned (64)));
     uint32_t max_epoch;
     unsigned int *read_done __attribute__ ((aligned (64)));
-    unsigned int *epoch __attribute__ ((aligned (64)));
+    //unsigned int *epoch __attribute__ ((aligned (64)));
     unsigned int epoch_global __attribute__ ((aligned (64)));
 #endif
 };

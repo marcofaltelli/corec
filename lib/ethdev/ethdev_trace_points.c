@@ -27,5 +27,8 @@ RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_close,
 RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_rx_burst,
 	lib.ethdev.rx.burst)
 
+RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_rx_burst_parallel,
+        lib.ethdev.rx.burst.parallel)
+
 RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_tx_burst,
 	lib.ethdev.tx.burst)

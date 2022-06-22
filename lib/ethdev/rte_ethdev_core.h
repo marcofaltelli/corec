@@ -33,6 +33,13 @@ typedef uint16_t (*eth_rx_burst_t)(void *rxq,
 				   uint16_t nb_pkts);
 
 /**
+ * @internal Retrieve input packets (possibly in a multiple-consumer way) from a receive queue of an Ethernet device.
+ */
+typedef uint16_t (*eth_rx_burst_parallel_t)(void *rxq,
+								   struct rte_mbuf **rx_pkts,
+								   uint16_t nb_pkts);
+
+/**
  * @internal Send output packets on a transmit queue of an Ethernet device.
  */
 typedef uint16_t (*eth_tx_burst_t)(void *txq,
@@ -89,6 +96,8 @@ struct rte_eth_fp_ops {
 	 */
 	/** PMD receive function. */
 	eth_rx_burst_t rx_pkt_burst;
+	/** PMD parallel receive function. */
+	eth_rx_burst_parallel_t rx_pkt_burst_parallel;
 	/** Get the number of used Rx descriptors. */
 	eth_rx_queue_count_t rx_queue_count;
     /** Get the number of expected Rx descriptors. */

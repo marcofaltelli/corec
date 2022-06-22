@@ -1424,10 +1424,13 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 
 	dev->dev_ops = &i40e_eth_dev_ops;
 	dev->rx_queue_count = i40e_dev_rx_queue_count;
-    dev->rx_queue_extimate = i40e_dev_rx_queue_extimate;
 	dev->rx_descriptor_status = i40e_dev_rx_descriptor_status;
 	dev->tx_descriptor_status = i40e_dev_tx_descriptor_status;
 	dev->rx_pkt_burst = i40e_recv_pkts;
+#ifdef PARALLEL
+    dev->rx_pkt_burst_parallel = i40e_recv_pkts_parallel;
+    dev->rx_queue_extimate = i40e_dev_rx_queue_extimate;
+#endif
 	dev->tx_pkt_burst = i40e_xmit_pkts;
 	dev->tx_pkt_prepare = i40e_prep_pkts;
 

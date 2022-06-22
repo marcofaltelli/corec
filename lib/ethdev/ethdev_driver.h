@@ -47,6 +47,7 @@ struct rte_eth_rxtx_callback {
  */
 struct rte_eth_dev {
 	eth_rx_burst_t rx_pkt_burst; /**< Pointer to PMD receive function */
+    eth_rx_burst_t rx_pkt_burst_parallel; /**< Pointer to PMD parallel receive function */
 	eth_tx_burst_t tx_pkt_burst; /**< Pointer to PMD transmit function */
 
 	/** Pointer to PMD transmit prepare function */

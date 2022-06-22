@@ -32,6 +32,9 @@
 
 #include "l3fwd_route.h"
 #include <time.h>
+#include <sys/prctl.h>
+#include <rte_random.h>
+#include <rte_atomic.h>
 
 #define IPV4_L3FWD_LPM_MAX_RULES         1024
 #define IPV4_L3FWD_LPM_NUMBER_TBL8S (1 << 8)
@@ -141,6 +144,8 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 #endif
 
 
+uint64_t count = 0;
+uint64_t mean = 0;
 
 /* main processing loop */
 int
@@ -148,7 +153,7 @@ lpm_main_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
-	uint64_t prev_tsc, diff_tsc, cur_tsc;
+	uint64_t prev_tsc, diff_tsc, cur_tsc, first, second, delta;
 	int i, nb_rx;
 	uint16_t portid;
 	uint8_t queueid;
@@ -160,6 +165,11 @@ lpm_main_loop(__rte_unused void *dummy)
 	qconf = &lcore_conf[lcore_id];
 	uint64_t total_pkts = 0;
     unsigned int full_buffer = 0;
+
+    struct timespec sleeptime;
+    sleeptime.tv_sec = 0;
+    sleeptime.tv_nsec = 1000;
+    prctl(PR_SET_TIMERSLACK, 1);
 
 	const uint16_t n_rx_q = qconf->n_rx_queue;
 	const uint16_t n_tx_p = qconf->n_tx_port;
@@ -181,7 +191,7 @@ lpm_main_loop(__rte_unused void *dummy)
 
 	cur_tsc = rte_rdtsc();
 	prev_tsc = cur_tsc;
-
+    //pause();
 	while (!force_quit) {
 
 		/*
@@ -213,8 +223,22 @@ lpm_main_loop(__rte_unused void *dummy)
 				MAX_PKT_BURST);
 			if (nb_rx == 0)
 				continue;
-
+           // nanosleep(&sleeptime, NULL);
 			total_pkts += (uint64_t) nb_rx;
+			/*if (rte_rand_max(100) == 0) {
+			    count++;
+                first = rte_rdtsc_precise();
+			    rte_smp_mb();
+                //rte_delay_us(1);
+                nanosleep(&sleeptime, NULL);
+                rte_smp_mb();
+                second = rte_rdtsc_precise();
+                delta = second - first - mean;
+                mean += delta / count;*/
+
+                //nanosleep(&sleeptime, NULL);
+			//}
+
 #if defined RTE_ARCH_X86 || defined __ARM_NEON \
 			 || defined RTE_ARCH_PPC_64
 			l3fwd_lpm_send_packets(nb_rx, pkts_burst,
@@ -229,6 +253,7 @@ lpm_main_loop(__rte_unused void *dummy)
 	}
 
 	printf("Num RX %llu\n", total_pkts);
+    printf("Delta is %llu\n", mean);
 	return 0;
 }
 
@@ -260,9 +285,10 @@ lpm_secondary_loop(__rte_unused void *dummy)
         RTE_LOG(INFO, L3FWD, "lcore %u has nothing to do\n", lcore_id);
         return 0;
     }
-
+    prctl(PR_SET_TIMERSLACK, 1);
     RTE_LOG(INFO, L3FWD, "entering secondary loop on lcore %u\n", lcore_id);
 
+    //pause();
     //qconf for secondary thread needs to have a global view (see all port/queue pairs)
     for (i = 0; i < n_rx_q; i++) {
 
@@ -282,41 +308,45 @@ lpm_secondary_loop(__rte_unused void *dummy)
 
     while (!force_quit) {
 
-        nanosleep(&sleeptime, NULL);
         cycle_pkts = 0;
 
         for (i = 0; i < n_rx_q; ++i) {
             portid = qconf->rx_queue_list[i].port_id;
             queueid = qconf->rx_queue_list[i].queue_id;
-            count[i] = rte_eth_rx_queue_extimate(portid, queueid);
-            if (count[i] >= 0) {
+            //count[i] = rte_eth_rx_queue_extimate(portid, queueid);
+           // if (count[i] > 0) {
                 do {
                     nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst,
                                              MAX_PKT_BURST);
-
-
+                    /*if (nb_rx == 0)
+                        break;
+*/
                     total_pkts += (uint64_t) nb_rx;
                     cycle_pkts += (uint64_t) nb_rx;
+                    if (nb_rx > 0) {
 #if defined RTE_ARCH_X86 || defined __ARM_NEON \
 			 || defined RTE_ARCH_PPC_64
-                    l3fwd_lpm_send_packets(nb_rx, pkts_burst,
-                            portid, qconf);
+                        l3fwd_lpm_send_packets(nb_rx, pkts_burst,
+                                portid, qconf);
 #else
-                    l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
-                                              portid, qconf);
+                        l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
+                                                      portid, qconf);
 #endif /* X86 */
-                    } while (nb_rx >= MAX_PKT_BURST/2);
-                }
+                    }
+                    } while (nb_rx > 0);
+               /* }
             else
-                continue;
+                continue;*/
                 }
 
         if (cycle_pkts == 0) {
             sleeptime.tv_nsec *= 2;
-            if (sleeptime.tv_nsec >= MAX_SLEEP)
+            if (sleeptime.tv_nsec > MAX_SLEEP)
                 sleeptime.tv_nsec = MAX_SLEEP;
         }else
             sleeptime.tv_nsec = START_SLEEP;
+        if (sleeptime.tv_nsec > 16000)
+            nanosleep(&sleeptime, NULL);
     }
 
     printf("Secondary thread num RX %llu\n", total_pkts);

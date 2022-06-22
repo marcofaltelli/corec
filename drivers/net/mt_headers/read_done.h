@@ -118,7 +118,7 @@
     while (__atomic_load_n(array + start_var, __ATOMIC_ACQUIRE) == UINT_MAX) {
         start_var = wrap_ring(start_var, size/size_ull);
         processed += size_ull;
-      //  RTE_LOG(CRIT, EAL, "start_var %u processed %u\n", start_var, processed);
+     //   RTE_LOG(CRIT, EAL, "start_var %u processed %u\n", start_var, processed);
         //  __sync_synchronize();
     }
    // RTE_LOG(CRIT, EAL, "exit\n");
