@@ -1861,7 +1861,7 @@ ixgbe_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
         rx_id = last_rx_index;
         rx_index = last_rx_index;
 
-        int ret = rte_mempool_get_bulk(rxq->mp, (void **)&batch, batch_size);
+        int ret = rte_mempool_get_bulk(rxq->mb_pool, (void **)&batch, batch_size);
 
         if (ret != 0)
             RTE_LOG(CRIT, EAL, "Failed bulk allocation\n");
