@@ -37,7 +37,7 @@
 /*
  * Try to avoid TX buffering if we have at least MAX_TX_BURST packets to send.
  */
-#define	MAX_TX_BURST	  (MAX_PKT_BURST / 2)
+#define	MAX_TX_BURST	  1//(MAX_PKT_BURST / 2)
 
 #define NB_SOCKETS        8
 

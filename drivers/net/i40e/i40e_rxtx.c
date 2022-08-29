@@ -872,9 +872,8 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
     rx_ring = rxq->rx_ring;
     sw_ring = rxq->sw_ring;
     ptype_tbl = rxq->vsi->adapter->ptype_tbl;
-   // unsigned long time1 = rte_rdts
-    //RTE_LOG(CRIT, EAL, "Entering driver code read done %p epoch %p\n", rxq->read_done, rxq->epoch);
     //Marco addition: starting from here to move on descriptors
+    //Get a local copy of the max counter
     unsigned int max_counter_local = __atomic_load_n(&rxq->max_counter, __ATOMIC_ACQUIRE);
     uint16_t rx_index = wrap_ring_no_incr(max_counter_local, rxq->nb_rx_desc);
     unsigned int current_epoch;
@@ -894,6 +893,7 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
         /* Check the DD bit first, as well as the epoch and the READ_DONE bit set to 0 */
         if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)) ||
             //(__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
+            //TODO: try to take away this check? would something bad happen? I believe so but I can't remember why 
             (__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch) //||
 //            (read_bit(rxq->read_done, rx_index))
             )

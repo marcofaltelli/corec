@@ -144,8 +144,6 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 #endif
 
 
-uint64_t count = 0;
-uint64_t mean = 0;
 
 /* main processing loop */
 int
@@ -165,6 +163,9 @@ lpm_main_loop(__rte_unused void *dummy)
 	qconf = &lcore_conf[lcore_id];
 	uint64_t total_pkts = 0;
     unsigned int full_buffer = 0;
+
+    uint64_t count = 0;
+    uint64_t mean = 0;
 
     struct timespec sleeptime;
     sleeptime.tv_sec = 0;
@@ -221,23 +222,18 @@ lpm_main_loop(__rte_unused void *dummy)
 			queueid = qconf->rx_queue_list[i].queue_id;
 			nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst,
 				MAX_PKT_BURST);
+            mean += nb_rx;
+            count++;
 			if (nb_rx == 0)
 				continue;
            // nanosleep(&sleeptime, NULL);
 			total_pkts += (uint64_t) nb_rx;
 			/*if (rte_rand_max(100) == 0) {
-			    count++;
-                first = rte_rdtsc_precise();
 			    rte_smp_mb();
-                //rte_delay_us(1);
-                nanosleep(&sleeptime, NULL);
-                rte_smp_mb();
-                second = rte_rdtsc_precise();
-                delta = second - first - mean;
-                mean += delta / count;*/
-
+                rte_delay_us_block(10);
                 //nanosleep(&sleeptime, NULL);
-			//}
+                rte_smp_mb();
+			}*/
 
 #if defined RTE_ARCH_X86 || defined __ARM_NEON \
 			 || defined RTE_ARCH_PPC_64
@@ -253,7 +249,7 @@ lpm_main_loop(__rte_unused void *dummy)
 	}
 
 	printf("Num RX %llu\n", total_pkts);
-    printf("Delta is %llu\n", mean);
+    printf("Mean pkt found is %f \t tot %llu times %llu\n", ((float) mean) / ((float) count), mean, count);
 	return 0;
 }
 

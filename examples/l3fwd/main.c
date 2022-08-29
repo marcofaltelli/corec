@@ -86,6 +86,8 @@ volatile bool force_quit;
 uint64_t dest_eth_addr[RTE_MAX_ETHPORTS];
 struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
+struct rte_ether_addr l3fwd_eth_ports[RTE_MAX_ETHPORTS];
+
 xmm_t val_eth[RTE_MAX_ETHPORTS];
 
 /* mask of enabled ports */
@@ -205,6 +207,9 @@ const struct ipv4_l3fwd_route ipv4_l3fwd_route_array[] = {
 	{RTE_IPV4(198, 18, 12, 0), 24, 12},
 	{RTE_IPV4(198, 18, 13, 0), 24, 13},
 	{RTE_IPV4(198, 18, 14, 0), 24, 14},
+    {RTE_IPV4(255, 255, 255, 255), 1, 0},
+    {RTE_IPV4(255, 255, 255, 255), 1, 1},
+
 	//{RTE_IPV4(198, 18, 15, 0), 24, 15},
 };
 
@@ -1396,6 +1401,25 @@ l3fwd_event_service_setup(void)
 	}
 }
 
+void ports_setup() {
+    l3fwd_eth_ports[0].addr_bytes[0] = 0xf8;
+    l3fwd_eth_ports[0].addr_bytes[1] = 0xf2;
+    l3fwd_eth_ports[0].addr_bytes[2] = 0x1e;
+    l3fwd_eth_ports[0].addr_bytes[3] = 0x90;
+    l3fwd_eth_ports[0].addr_bytes[4] = 0x77;
+    l3fwd_eth_ports[0].addr_bytes[5] = 0x70;
+    print_ethaddr("Destination: ", &l3fwd_eth_ports[0]);
+
+    l3fwd_eth_ports[1].addr_bytes[0] = 0xf8;
+    l3fwd_eth_ports[1].addr_bytes[1] = 0xf2;
+    l3fwd_eth_ports[1].addr_bytes[2] = 0x1e;
+    l3fwd_eth_ports[1].addr_bytes[3] = 0x90;
+    l3fwd_eth_ports[1].addr_bytes[4] = 0x77;
+    l3fwd_eth_ports[1].addr_bytes[5] = 0x71;
+    print_ethaddr("Destination: ", &l3fwd_eth_ports[1]);
+    return;
+}
+
 
 int
 main(int argc, char **argv)
@@ -1417,6 +1441,9 @@ main(int argc, char **argv)
 	force_quit = false;
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
+
+   // l3fwd_eth_ports[0].addr_bytes = {0xf8, 0xf2, 0x1e, 0x90, 0x77, 0x70};
+
 
 	/* pre-init dst MACs for all ports to 02:00:00:00:00:xx */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {

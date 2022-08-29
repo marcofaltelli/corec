@@ -80,7 +80,7 @@ volatile bool force_quit;
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define IPSEC_SECGW_RX_DESC_DEFAULT 1024
+#define IPSEC_SECGW_RX_DESC_DEFAULT 4096
 #define IPSEC_SECGW_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = IPSEC_SECGW_RX_DESC_DEFAULT;
 static uint16_t nb_txd = IPSEC_SECGW_TX_DESC_DEFAULT;
@@ -246,14 +246,16 @@ static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode	= RTE_ETH_MQ_RX_RSS,
 		.split_hdr_size = 0,
-		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
+		//.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP |
-				RTE_ETH_RSS_TCP | RTE_ETH_RSS_SCTP,
-		},
+			//.rss_hf = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP |
+			//	RTE_ETH_RSS_TCP | RTE_ETH_RSS_SCTP,
+		   .rss_hf = ETH_RSS_FRAG_IPV4 | ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP,
+			// .rss_hf = NULL,
+        },
 	},
 	.txmode = {
 		.mq_mode = RTE_ETH_MQ_TX_NONE,
@@ -674,7 +676,9 @@ send_single_packet(struct rte_mbuf *m, uint16_t port, uint8_t proto)
 
 	/* enough pkts to be sent */
 	if (unlikely(len == MAX_PKT_BURST)) {
-		send_burst(qconf, MAX_PKT_BURST, port);
+	//if (len >= 1) {
+	//	send_burst(qconf, 1, port);
+        send_burst(qconf, MAX_PKT_BURST, port);
 		len = 0;
 	}
 
@@ -1226,8 +1230,11 @@ ipsec_poll_mode_worker(void)
 	uint32_t lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int32_t i, nb_rx;
+	uint64_t tot = 0;
 	uint16_t portid;
 	uint8_t queueid;
+	uint64_t count = 0, time = 0, count_work = 0;
+	uint64_t before, after;
 	struct lcore_conf *qconf;
 	int32_t rc, socket_id;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1)
@@ -1302,8 +1309,12 @@ ipsec_poll_mode_worker(void)
 			queueid = rxql[i].queue_id;
 			nb_rx = rte_eth_rx_burst(portid, queueid,
 					pkts, MAX_PKT_BURST);
-
+            count++;
 			if (nb_rx > 0) {
+			  //  printf("Received %u pkts on queue %u\n", nb_rx, queueid);
+			  tot += nb_rx;
+			  count_work++;
+			  before = rte_rdtsc_precise();
 				core_stats_update_rx(nb_rx);
 				process_pkts(qconf, pkts, nb_rx, portid);
 			}
@@ -1315,8 +1326,13 @@ ipsec_poll_mode_worker(void)
 			else
 				drain_outbound_crypto_queues(qconf,
 					&qconf->outbound);
+			if (nb_rx > 0) {
+                after = rte_rdtsc_precise();
+                time += (after - before) / 2.1;
+            }
 		}
 	}
+	printf("Total for core %u is %llu mean pkts found is %f time is %llu\t found pkts %f percent of the tries\n", lcore_id, tot, ((float) tot) / ((float) count), time/count_work, 100 * ((float) count_work)/((float) count));
 }
 
 int
