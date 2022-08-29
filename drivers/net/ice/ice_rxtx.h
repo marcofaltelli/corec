@@ -7,6 +7,7 @@
 
 #include "ice_ethdev.h"
 
+#define PARALLEL 1
 #define ICE_ALIGN_RING_DESC  32
 #define ICE_MIN_RING_DESC    64
 #define ICE_MAX_RING_DESC    4096
@@ -95,6 +96,15 @@ struct ice_rx_queue {
 	uint32_t time_high;
 	uint32_t hw_register_set;
 	const struct rte_memzone *mz;
+
+#ifdef PARALLEL
+    //addition
+    uint32_t max_counter __attribute__ ((aligned (64)));
+    uint64_t release_sync __attribute__ ((aligned (64)));
+    uint32_t max_epoch;
+    unsigned int *read_done __attribute__ ((aligned (64)));
+    unsigned int epoch_global __attribute__ ((aligned (64)));
+#endif
 };
 
 struct ice_tx_entry {
@@ -223,6 +233,8 @@ int ice_fdir_setup_tx_resources(struct ice_pf *pf);
 int ice_fdir_setup_rx_resources(struct ice_pf *pf);
 uint16_t ice_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		       uint16_t nb_pkts);
+uint16_t ice_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts,
+                       uint16_t nb_pkts);
 uint16_t ice_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		       uint16_t nb_pkts);
 void ice_set_rx_function(struct rte_eth_dev *dev);

@@ -10,6 +10,11 @@
 #include "ice_rxtx.h"
 #include "ice_rxtx_vec_common.h"
 
+#ifdef PARALLEL
+#include "../mt_headers/read_done.h"
+#include "../mt_headers/tail_handler.h"
+#endif
+
 #define ICE_TX_CKSUM_OFFLOAD_MASK (RTE_MBUF_F_TX_IP_CKSUM |		 \
 		RTE_MBUF_F_TX_L4_MASK |		 \
 		RTE_MBUF_F_TX_TCP_SEG |		 \
@@ -1121,6 +1126,20 @@ ice_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 	rxq->proto_xtr = pf->proto_xtr != NULL ?
 			 pf->proto_xtr[queue_idx] : PROTO_XTR_NONE;
+
+#ifdef PARALLEL
+    //addition
+    rxq->max_counter = 0;
+    rxq->release_sync = 0;
+    rxq->max_epoch = UINT_MAX / nb_desc;
+    rxq->epoch_global = 0;
+    rxq->read_done = rte_zmalloc_socket("read_done", nb_desc/8, RTE_CACHE_LINE_SIZE, socket_id);
+    if (!rxq->read_done) {
+        PMD_DRV_LOG(ERR, "Failed to allocate memory for "
+                         " structure");
+        return -ENOMEM;
+    }
+#endif
 
 	/* Allocate the maximum number of RX ring hardware descriptor. */
 	len = ICE_MAX_RING_DESC;
@@ -2304,6 +2323,223 @@ ice_fdir_setup_rx_resources(struct ice_pf *pf)
 }
 
 uint16_t
+ice_recv_pkts_parallel(void *rx_queue,
+              struct rte_mbuf **rx_pkts,
+              uint16_t nb_pkts)
+{
+    struct ice_rx_queue *rxq = rx_queue;
+    volatile union ice_rx_flex_desc *rx_ring = rxq->rx_ring;
+    volatile union ice_rx_flex_desc *rxdp;
+    union ice_rx_flex_desc rxd;
+    struct ice_rx_entry *sw_ring = rxq->sw_ring;
+    struct ice_rx_entry *rxe;
+    struct rte_mbuf *nmb; /* new allocated mbuf */
+    struct rte_mbuf *rxm; /* pointer to store old mbuf in SW ring */
+    uint16_t rx_id = rxq->rx_tail;
+    uint16_t nb_rx = 0;
+    uint16_t nb_hold = 0;
+    uint16_t rx_packet_len;
+    uint16_t rx_stat_err0;
+    uint64_t dma_addr;
+    uint64_t pkt_flags;
+    uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
+#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+    struct ice_vsi *vsi = rxq->vsi;
+    struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
+    uint64_t ts_ns;
+    struct ice_adapter *ad = rxq->vsi->adapter;
+#endif
+
+    //addition: starting from here to move on descriptors
+    //Get a local copy of the max counter
+    unsigned int max_counter_local = __atomic_load_n(&rxq->max_counter, __ATOMIC_ACQUIRE);
+    uint16_t rx_index = wrap_ring_no_incr(max_counter_local, rxq->nb_rx_desc);
+    unsigned int current_epoch;
+    current_epoch = max_counter_local / rxq->nb_rx_desc;
+    uint16_t last_rx_index = rx_index;
+    uint16_t batch_size;
+    uint32_t min_counter_local, min_counter_wrapped;
+    uint32_t tail_unwrapped;
+    uint32_t processed;
+    struct rte_mbuf *batch[32];
+
+    if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP)
+        rxq->hw_register_set = 1;
+
+    for (batch_size = 0; batch_size < nb_pkts; batch_size++) {
+        rxdp = &rx_ring[rx_index];
+        rx_stat_err0 = rte_le_to_cpu_16(rxdp->wb.status_error0);
+        /* Check the DD bit first, as well as the epoch and the READ_DONE bit set to 0 */
+        if (!(rx_stat_err0 & (1 << ICE_RX_FLEX_DESC_STATUS0_DD_S)) ||
+            //(__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
+            //TODO: try to take away this check? would something bad happen? I believe so but I can't remember why
+            (__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch) //||
+//            (read_bit(rxq->read_done, rx_index))
+                )
+        {
+            break;
+        }
+
+        rx_index = wrap_ring_n(rx_index, 1, rxq->nb_rx_desc);
+        /* If the next descriptor to be checked is 0, we need to update the epoch to the new one (current + 1) % MAX_EPOCH*/
+        if (rx_index == 0) {
+            if (unlikely(current_epoch == rxq->max_epoch))
+                current_epoch = 0;
+            else
+                current_epoch++;
+        }
+    }
+
+    if (batch_size == 0) {
+        //Even if no packets were found, we still need to check if some descriptors can be freed
+        goto free_part;
+    }
+
+    if (__sync_bool_compare_and_swap(&rxq->max_counter, max_counter_local, max_counter_local + batch_size)) {
+        rx_id = last_rx_index;
+        rx_index = last_rx_index;
+
+
+        int ret = rte_mempool_get_bulk(rxq->mp, (void **) &batch, batch_size);
+
+        if (ret != 0)
+            RTE_LOG(CRIT, EAL, "Failed bulk allocation\n");
+
+        while (nb_rx < batch_size) {
+            rxdp = &rx_ring[rx_id];
+            //TODO: after debugging, this can be removed
+            rx_stat_err0 = rte_le_to_cpu_16(rxdp->wb.status_error0);
+
+            /* Check the DD bit first */
+            if (!(rx_stat_err0 & (1 << ICE_RX_FLEX_DESC_STATUS0_DD_S))) {
+                assert(0);
+                break;
+            }
+
+            /* allocate mbuf */
+            //nmb = rte_mbuf_raw_alloc(rxq->mp);
+            //Addition: entry is already allocated, now needs to be only assigned
+            nmb = batch[nb_rx];
+            //TODO: this needs to be canceled too
+            if (unlikely(!nmb)) {
+                rxq->vsi->adapter->pf.dev_data->rx_mbuf_alloc_failed++;
+                break;
+            }
+            rxd = *rxdp; /* copy descriptor in ring to temp variable*/
+
+            nb_hold++;
+            rxe = &sw_ring[rx_id]; /* get corresponding mbuf in SW ring */
+            rx_id++;
+            if (unlikely(rx_id == rxq->nb_rx_desc))
+                rx_id = 0;
+            rxm = rxe->mbuf;
+            rxe->mbuf = nmb;
+            dma_addr =
+                    rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
+
+            /**
+             * fill the read format of descriptor with physic address in
+             * new allocated mbuf: nmb
+             */
+            rxdp->read.hdr_addr = 0;
+            rxdp->read.pkt_addr = dma_addr;
+
+            /* calculate rx_packet_len of the received pkt */
+            rx_packet_len = (rte_le_to_cpu_16(rxd.wb.pkt_len) &
+                             ICE_RX_FLX_DESC_PKT_LEN_M) - rxq->crc_len;
+
+            /* fill old mbuf with received descriptor: rxd */
+            rxm->data_off = RTE_PKTMBUF_HEADROOM;
+            rte_prefetch0(RTE_PTR_ADD(rxm->buf_addr, RTE_PKTMBUF_HEADROOM));
+            rxm->nb_segs = 1;
+            rxm->next = NULL;
+            rxm->pkt_len = rx_packet_len;
+            rxm->data_len = rx_packet_len;
+            rxm->port = rxq->port_id;
+            rxm->packet_type = ptype_tbl[ICE_RX_FLEX_DESC_PTYPE_M &
+                                         rte_le_to_cpu_16(rxd.wb.ptype_flex_flags0)];
+            ice_rxd_to_vlan_tci(rxm, &rxd);
+            rxd_to_pkt_fields_ops[rxq->rxdid](rxq, rxm, &rxd);
+            pkt_flags = ice_rxd_error_to_pkt_flags(rx_stat_err0);
+#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+            if (ice_timestamp_dynflag > 0) {
+                ts_ns = ice_tstamp_convert_32b_64b(hw, ad,
+                                                   rxq->hw_register_set,
+                                                   rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high));
+                rxq->hw_register_set = 0;
+                *RTE_MBUF_DYNFIELD(rxm,
+                                   ice_timestamp_dynfield_offset,
+                                   rte_mbuf_timestamp_t * ) = ts_ns;
+                rxm->ol_flags |= ice_timestamp_dynflag;
+            }
+
+            if (ad->ptp_ena && ((rxm->packet_type & RTE_PTYPE_L2_MASK) ==
+                                RTE_PTYPE_L2_ETHER_TIMESYNC)) {
+                rxq->time_high =
+                        rte_le_to_cpu_32(rxd.wb.flex_ts.ts_high);
+                rxm->timesync = rxq->queue_id;
+                pkt_flags |= RTE_MBUF_F_RX_IEEE1588_PTP;
+            }
+#endif
+            rxm->ol_flags |= pkt_flags;
+            /* copy old mbuf to rx_pkts */
+            rx_pkts[nb_rx++] = rxm;
+
+            //Addition
+            rx_index = wrap_ring_n(rx_index, 1, rxq->nb_rx_desc);
+        }
+        //Addition: write that this batch is now completed
+        write_batch_is_done(rxq->read_done, last_rx_index, wrap_ring_decrease(rx_index, rxq->nb_rx_desc), rxq->nb_rx_desc);
+
+        if (rx_index == 0) {
+            if (unlikely(__sync_add_and_fetch(&rxq->epoch_global, 1) == (rxq->max_epoch + 1)))
+                __atomic_store_n(&rxq->epoch_global, 0, __ATOMIC_RELEASE);
+        }
+    }
+    else {
+        return 0;
+    }
+    rxq->rx_tail = rx_id;
+    /**
+     * If the number of free RX descriptors is greater than the RX free
+     * threshold of the queue, advance the receive tail register of queue.
+     * Update that register with the value of the last processed RX
+     * descriptor minus 1.
+     */
+
+free_part:
+
+    processed = 0;
+    uint64_t release_local = read_variable(&rxq->release_sync);
+    min_counter_local = read_min_counter(&release_local);
+    tail_unwrapped = read_tail_w(&release_local);
+    if (tail_unwrapped != min_counter_local) {
+        return nb_rx;
+    }
+    min_counter_wrapped = wrap_ring_n(min_counter_local, 0, rxq->nb_rx_desc);
+    processed = read_batch64(rxq->read_done, min_counter_wrapped, rxq->nb_rx_desc);
+    if (processed == 0) {
+        //Nothing to free, we can return the received data
+        return nb_rx;
+    }
+    uint64_t release_new;
+    write_min_counter(&release_new, min_counter_local + processed);
+    write_tail_w(&release_new, tail_unwrapped);
+
+    if (__sync_bool_compare_and_swap(&rxq->release_sync, release_local, release_new)) {
+        uint32_t wrapped = wrap_ring_n(min_counter_local, processed - 1, rxq->nb_rx_desc);
+        write_batch64(rxq->read_done, min_counter_wrapped, wrap_ring_n(min_counter_local, processed, rxq->nb_rx_desc), rxq->nb_rx_desc);
+        ICE_PCI_REG_WC_WRITE(rxq->qrx_tail, (uint16_t) wrapped);
+        rxq->rx_tail = (uint16_t) wrapped;
+        write_tail_w(&rxq->release_sync, tail_unwrapped + processed);
+        // RTE_LOG(CRIT, EAL, "writing global tail %u HW tail %u\n", tail_unwrapped + processed, wrapped);
+    }
+
+    return nb_rx;
+
+}
+
+uint16_t
 ice_recv_pkts(void *rx_queue,
 	      struct rte_mbuf **rx_pkts,
 	      uint16_t nb_pkts)
@@ -3342,6 +3578,11 @@ ice_set_rx_function(struct rte_eth_dev *dev)
 			     dev->data->port_id);
 		dev->rx_pkt_burst = ice_recv_pkts;
 	}
+	dev->rx_pkt_burst = ice_recv_pkts;
+#ifdef PARALLEL
+    dev->rx_pkt_burst = ice_recv_pkts_parallel;
+#endif
+
 }
 
 static const struct {

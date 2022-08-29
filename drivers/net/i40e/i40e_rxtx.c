@@ -934,6 +934,7 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
                     >> I40E_RXD_QW1_STATUS_SHIFT;
 
             /* Check the DD bit first */
+            //TODO: just for debug purpose, not needed anymore!! We should cancel it
             if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT))) {
                 assert(0);
                 break;
@@ -942,7 +943,7 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
             //nmb = rte_mbuf_raw_alloc(rxq->mp);
             //Addition: entry is already allocated, now needs to be only assigned
             nmb = batch[nb_rx];
-
+            //TODO: this needs to be canceled too
             if (unlikely(!nmb)) {
                 dev = I40E_VSI_TO_ETH_DEV(rxq->vsi);
                 dev->data->rx_mbuf_alloc_failed++;
