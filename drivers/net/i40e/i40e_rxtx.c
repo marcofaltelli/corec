@@ -891,10 +891,10 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
         rx_status = (qword1 & I40E_RXD_QW1_STATUS_MASK)
                 >> I40E_RXD_QW1_STATUS_SHIFT;
         /* Check the DD bit first, as well as the epoch and the READ_DONE bit set to 0 */
-        if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)) ||
+        if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)) //||
             //(__atomic_load_n(rxq->epoch + rx_index, __ATOMIC_ACQUIRE) != current_epoch) ||
             //TODO: try to take away this check? would something bad happen? I believe so but I can't remember why 
-            (__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch) //||
+            //(__atomic_load_n(&rxq->epoch_global, __ATOMIC_ACQUIRE) != current_epoch) //||
 //            (read_bit(rxq->read_done, rx_index))
             )
             {
@@ -930,15 +930,15 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
             rxdp = &rx_ring[rx_id];
             qword1 = rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len);
             /*This line could be removed since it's already checked, we'll leave it as-it-is just for testing reasons*/
-            rx_status = (qword1 & I40E_RXD_QW1_STATUS_MASK)
-                    >> I40E_RXD_QW1_STATUS_SHIFT;
+            //rx_status = (qword1 & I40E_RXD_QW1_STATUS_MASK)
+             //       >> I40E_RXD_QW1_STATUS_SHIFT;
 
             /* Check the DD bit first */
-            if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT))) {
+            /*if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT))) {
                 assert(0);
                 break;
             }
-
+*/
             //nmb = rte_mbuf_raw_alloc(rxq->mp);
             //Addition: entry is already allocated, now needs to be only assigned
             nmb = batch[nb_rx];
@@ -1019,7 +1019,6 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
             /*if ( unlikely(__sync_add_and_fetch(rxq->epoch + rx_index, 1) == (rxq->max_epoch + 1) ))
                 __atomic_store_n(rxq->epoch + rx_index, 0, __ATOMIC_RELEASE);*/
             rx_index = wrap_ring_n(rx_index, 1, rxq->nb_rx_desc);
-
         }
         write_batch_is_done(rxq->read_done, last_rx_index, wrap_ring_decrease(rx_index, rxq->nb_rx_desc), rxq->nb_rx_desc);
 
