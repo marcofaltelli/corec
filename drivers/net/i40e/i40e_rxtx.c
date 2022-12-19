@@ -1117,6 +1117,7 @@ uint16_t
 i40e_rx_queue_free_descs(void **rx_queue)
 {
     struct i40e_rx_queue *rxq;
+    rxq = rx_queue;
     uint32_t min_counter_local, min_counter_wrapped;
     //uint32_t tail_unwrapped, tail_local;
     uint32_t processed;
@@ -1139,7 +1140,7 @@ i40e_rx_queue_free_descs(void **rx_queue)
         lock = 0;
     }
 
-    return processed;
+    return 0;
 }
 
 
