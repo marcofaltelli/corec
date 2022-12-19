@@ -1114,7 +1114,7 @@ free_part:
 #endif
 
 uint16_t
-i40e_rx_queue_free_descs(void **rx_queue)
+i40e_rx_queue_free_descs(void *rx_queue)
 {
     struct i40e_rx_queue *rxq;
     rxq = rx_queue;
