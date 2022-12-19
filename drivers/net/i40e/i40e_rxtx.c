@@ -844,6 +844,22 @@ static inline struct rte_mbuf *rte_mbuf_raw_alloc_bulk(struct rte_mempool *mp, u
     return m;
 }
 
+static inline int trylock(void * uadr){
+    unsigned long r =0 ;
+    asm volatile(
+    "xor %%rax,%%rax\n"
+    "mov $1,%%rbx\n"
+    "lock cmpxchg %%rbx,(%1)\n"
+    "sete (%0)\n"
+    : : "r"(&r),"r" (uadr)
+    : "%rax","%rbx"
+    );
+    asm volatile("" ::: "memory");
+    return (r) ? 1 : 0;
+}
+
+unsigned long lock = 0;
+
 uint16_t
 i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts) {
     struct i40e_rx_queue *rxq;
@@ -1045,7 +1061,27 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
 
 free_part:
 
-    processed = 0;
+    if (trylock(&lock)) {
+        uint64_t release_local = read_variable(&rxq->release_sync);
+        min_counter_local = read_min_counter(&release_local);
+        min_counter_wrapped = wrap_ring_n(min_counter_local, 0, rxq->nb_rx_desc);
+        processed = read_batch64(rxq->read_done, min_counter_wrapped, rxq->nb_rx_desc);
+        if (processed == 0){
+            lock = 0;
+            return nb_rx;
+        }
+        uint32_t wrapped = wrap_ring_n(min_counter_local, processed - 1, rxq->nb_rx_desc);
+        write_batch64(rxq->read_done, min_counter_wrapped, wrap_ring_n(min_counter_local, processed, rxq->nb_rx_desc), rxq->nb_rx_desc);
+        I40E_PCI_REG_WC_WRITE(rxq->qrx_tail, (uint16_t) wrapped);
+        rxq->rx_tail = (uint16_t) wrapped;
+        write_min_counter(&rxq->release_sync, min_counter_local + processed);
+        lock = 0;
+    }
+
+    return nb_rx;
+
+
+   /* processed = 0;
     uint64_t release_local = read_variable(&rxq->release_sync);
     min_counter_local = read_min_counter(&release_local);
     tail_unwrapped = read_tail_w(&release_local);
@@ -1071,10 +1107,40 @@ free_part:
        // RTE_LOG(CRIT, EAL, "writing global tail %u HW tail %u\n", tail_unwrapped + processed, wrapped);
     }
 
-	return nb_rx;
+	return nb_rx;*/
 }
 
 #endif
+
+uint16_t
+i40e_rx_queue_free_descs(void **rx_queue)
+{
+    struct i40e_rx_queue *rxq;
+    uint32_t min_counter_local, min_counter_wrapped;
+    //uint32_t tail_unwrapped, tail_local;
+    uint32_t processed;
+
+
+    if (trylock(&lock)) {
+        uint64_t release_local = read_variable(&rxq->release_sync);
+        min_counter_local = read_min_counter(&release_local);
+        min_counter_wrapped = wrap_ring_n(min_counter_local, 0, rxq->nb_rx_desc);
+        processed = read_batch64(rxq->read_done, min_counter_wrapped, rxq->nb_rx_desc);
+        if (processed == 0){
+            lock = 0;
+            return nb_rx;
+        }
+        uint32_t wrapped = wrap_ring_n(min_counter_local, processed - 1, rxq->nb_rx_desc);
+        write_batch64(rxq->read_done, min_counter_wrapped, wrap_ring_n(min_counter_local, processed, rxq->nb_rx_desc), rxq->nb_rx_desc);
+        I40E_PCI_REG_WC_WRITE(rxq->qrx_tail, (uint16_t) wrapped);
+        rxq->rx_tail = (uint16_t) wrapped;
+        write_min_counter(&rxq->release_sync, min_counter_local + processed);
+        lock = 0;
+    }
+
+    return nb_rx;
+}
+
 
 uint16_t
 i40e_recv_scattered_pkts(void *rx_queue,

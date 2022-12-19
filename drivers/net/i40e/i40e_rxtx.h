@@ -221,6 +221,7 @@ uint16_t i40e_recv_pkts(void *rx_queue,
 uint16_t i40e_recv_pkts_parallel(void *rx_queue,
                         struct rte_mbuf **rx_pkts,
                         uint16_t nb_pkts);
+uint16_t i40e_rx_queue_free_descs(void **rx_queue)
 uint16_t i40e_recv_scattered_pkts(void *rx_queue,
 				  struct rte_mbuf **rx_pkts,
 				  uint16_t nb_pkts);

@@ -40,6 +40,12 @@ typedef uint16_t (*eth_rx_burst_parallel_t)(void *rxq,
 								   uint16_t nb_pkts);
 
 /**
+/**
+ * @internal Free the already used descriptors in a receive queue of an Ethernet device.
+ */
+typedef uint16_t (*eth_rx_queue_free_descs_t)(void *rxq);
+
+/**
  * @internal Send output packets on a transmit queue of an Ethernet device.
  */
 typedef uint16_t (*eth_tx_burst_t)(void *txq,
@@ -102,6 +108,8 @@ struct rte_eth_fp_ops {
 	eth_rx_queue_count_t rx_queue_count;
     /** Get the number of expected Rx descriptors. */
     eth_rx_queue_extimate_t rx_queue_extimate;
+    /** Free the used descriptors of a certain queue  */
+    eth_rx_queue_free_descs_t rx_queue_free_descs
 	/** Check the status of a Rx descriptor. */
 	eth_rx_descriptor_status_t rx_descriptor_status;
 	/** Rx queues data. */
