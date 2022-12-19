@@ -40,7 +40,6 @@ typedef uint16_t (*eth_rx_burst_parallel_t)(void *rxq,
 								   uint16_t nb_pkts);
 
 /**
-/**
  * @internal Free the already used descriptors in a receive queue of an Ethernet device.
  */
 typedef uint16_t (*eth_rx_queue_free_descs_t)(void *rxq);
