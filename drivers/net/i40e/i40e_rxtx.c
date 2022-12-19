@@ -1059,6 +1059,7 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
 	 * descriptor minus 1.
 	 */
 
+	return nb_rx;
 free_part:
 
     if (trylock(&lock)) {
@@ -1128,7 +1129,7 @@ i40e_rx_queue_free_descs(void **rx_queue)
         processed = read_batch64(rxq->read_done, min_counter_wrapped, rxq->nb_rx_desc);
         if (processed == 0){
             lock = 0;
-            return nb_rx;
+            return processed;
         }
         uint32_t wrapped = wrap_ring_n(min_counter_local, processed - 1, rxq->nb_rx_desc);
         write_batch64(rxq->read_done, min_counter_wrapped, wrap_ring_n(min_counter_local, processed, rxq->nb_rx_desc), rxq->nb_rx_desc);
@@ -1138,7 +1139,7 @@ i40e_rx_queue_free_descs(void **rx_queue)
         lock = 0;
     }
 
-    return nb_rx;
+    return processed;
 }
 
 
