@@ -1430,7 +1430,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 #ifdef PARALLEL
     dev->rx_pkt_burst_parallel = i40e_recv_pkts_parallel;
     dev->rx_queue_extimate = i40e_dev_rx_queue_extimate;
-    dev->rx_queue_free = i40e_free_descs;
+    dev->rx_queue_free_descs = i40e_rx_queue_free_descs;
 #endif
 	dev->tx_pkt_burst = i40e_xmit_pkts;
 	dev->tx_pkt_prepare = i40e_prep_pkts;
