@@ -109,7 +109,7 @@ struct rte_eth_fp_ops {
     /** Get the number of expected Rx descriptors. */
     eth_rx_queue_extimate_t rx_queue_extimate;
     /** Free the used descriptors of a certain queue  */
-    eth_rx_queue_free_descs_t rx_queue_free_descs
+    eth_rx_queue_free_descs_t rx_queue_free_descs;
 	/** Check the status of a Rx descriptor. */
 	eth_rx_descriptor_status_t rx_descriptor_status;
 	/** Rx queues data. */

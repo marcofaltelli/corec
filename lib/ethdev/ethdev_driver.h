@@ -55,7 +55,7 @@ struct rte_eth_dev {
 	/** Extimate the number of used Rx descriptors */
 	eth_rx_queue_extimate_t rx_queue_extimate;
 	/** Free the used descriptors of a certain queue  */
-	eth_rx_queue_free_descs_t rx_queue_free_descs
+	eth_rx_queue_free_descs_t rx_queue_free_descs;
     /** Get the number of used Rx descriptors */
     eth_rx_queue_count_t rx_queue_count;
 	/** Check the status of a Rx descriptor */
