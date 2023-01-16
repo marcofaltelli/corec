@@ -5795,6 +5795,8 @@ rte_eth_rx_queue_free_descs(uint16_t port_id, uint16_t queue_id)
     if (qd == NULL)
         return -EINVAL;
 
+    RTE_ETHDEV_LOG(ERR,
+                   "Calling function\n");
     return (int)(*p->rx_queue_free_descs)(qd);
 }
 

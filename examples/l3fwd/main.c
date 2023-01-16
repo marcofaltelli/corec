@@ -1541,7 +1541,7 @@ main(int argc, char **argv)
     /*if (rte_eal_remote_launch(l3fwd_lkp.secondary_loop, NULL, 11) != 0)
         printf("Error in launching sec thread\n");*/
     printf("Before main loop launch");
-    rte_eal_mp_remote_launch(l3fwd_lkp.main_loop, NULL, CALL_MAIN);
+    rte_eal_mp_remote_launch(l3fwd_lkp.main_loop, NULL, SKIP_MAIN);
     printf("After main loop launch");
     //RTE_LCORE_FOREACH_SLAVE(lcore_id){
     //rte_eal_remote_launch(l3fwd_lkp.secondary_loop, NULL, 11);
@@ -1549,6 +1549,7 @@ main(int argc, char **argv)
     //rte_eal_remote_launch(l3fwd_lkp.main_loop, NULL, 9);
     //}
     //lpm_main_loop(NULL);
+    lpm_free_loop(NULL);
     printf("lcore %d about to wait master is %d\n", rte_lcore_id(), rte_get_main_lcore());
     //rte_eal_wait_lcore(9);
    // rte_eal_wait_lcore(11);

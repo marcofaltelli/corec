@@ -294,6 +294,13 @@ lpm_main_loop(__rte_unused void *dummy)
 int
 lpm_secondary_loop(__rte_unused void *dummy)
 {
+    return 0;
+}
+
+
+int
+lpm_free_loop(__rte_unused void *dummy)
+{
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
     unsigned lcore_id;
     uint64_t prev_tsc, diff_tsc, cur_tsc;
@@ -349,38 +356,10 @@ lpm_secondary_loop(__rte_unused void *dummy)
             queueid = qconf->rx_queue_list[i].queue_id;
             //count[i] = rte_eth_rx_queue_extimate(portid, queueid);
            // if (count[i] > 0) {
-                do {
-                    nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst,
-                                             MAX_PKT_BURST);
-                    /*if (nb_rx == 0)
-                        break;
-*/
-                    total_pkts += (uint64_t) nb_rx;
-                    cycle_pkts += (uint64_t) nb_rx;
-                    if (nb_rx > 0) {
-#if defined RTE_ARCH_X86 || defined __ARM_NEON \
-			 || defined RTE_ARCH_PPC_64
-                        l3fwd_lpm_send_packets(nb_rx, pkts_burst,
-                                portid, qconf);
-#else
-                        l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
-                                                      portid, qconf);
-#endif /* X86 */
-                    }
-                    } while (nb_rx > 0);
-               /* }
-            else
-                continue;*/
-                }
 
-        if (cycle_pkts == 0) {
-            sleeptime.tv_nsec *= 2;
-            if (sleeptime.tv_nsec > MAX_SLEEP)
-                sleeptime.tv_nsec = MAX_SLEEP;
-        }else
-            sleeptime.tv_nsec = START_SLEEP;
-        if (sleeptime.tv_nsec > 16000)
-            nanosleep(&sleeptime, NULL);
+           nb_rx = rte_eth_rx_queue_free_descs(portid, queueid);
+
+        }
     }
 
     printf("Secondary thread num RX %llu\n", total_pkts);

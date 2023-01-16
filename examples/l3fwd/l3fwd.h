@@ -222,6 +222,9 @@ int
 lpm_main_loop(__rte_unused void *dummy);
 
 int
+lpm_free_loop(__rte_unused void *dummy);
+
+int
 lpm_secondary_loop(__rte_unused void *dummy);
 
 int

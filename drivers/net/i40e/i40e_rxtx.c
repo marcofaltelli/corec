@@ -901,6 +901,7 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
     uint32_t tail_unwrapped, tail_local;
     uint32_t processed;
 
+
     for (batch_size = 0; batch_size < nb_pkts; batch_size++) {
         rxdp = &rx_ring[rx_index];
         qword1 = rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len);
@@ -1059,9 +1060,9 @@ i40e_recv_pkts_parallel(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_p
 	 * descriptor minus 1.
 	 */
 
-	return nb_rx;
 free_part:
 
+    return nb_rx;
     if (trylock(&lock)) {
         uint64_t release_local = read_variable(&rxq->release_sync);
         min_counter_local = read_min_counter(&release_local);
@@ -1120,10 +1121,13 @@ i40e_rx_queue_free_descs(void *rx_queue)
     rxq = rx_queue;
     uint32_t min_counter_local, min_counter_wrapped;
     //uint32_t tail_unwrapped, tail_local;
-    uint32_t processed;
+    uint32_t processed = 0;
+    RTE_LOG(CRIT, EAL, "Inside the function\n");
+
 
 
     if (trylock(&lock)) {
+        RTE_LOG(CRIT, EAL, "got lock\n");
         uint64_t release_local = read_variable(&rxq->release_sync);
         min_counter_local = read_min_counter(&release_local);
         min_counter_wrapped = wrap_ring_n(min_counter_local, 0, rxq->nb_rx_desc);
@@ -1140,7 +1144,7 @@ i40e_rx_queue_free_descs(void *rx_queue)
         lock = 0;
     }
 
-    return 0;
+    return processed;
 }
 
 
